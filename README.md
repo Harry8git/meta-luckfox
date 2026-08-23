@@ -10,7 +10,7 @@ If you able to add more hardware and test it - PR welcome
 
 ## What is it
 This layers provides support for Luckfox Pico Pro Max.  
-The aim - abbility to load system, capture and encode video without outdated Luckfox SDK.  
+The aim - ability to load system, capture and encode video without outdated Luckfox SDK.  
 
 ## What is inside
 1. `u-boot` - `next-dev` branch from rockchip-linux repository;
