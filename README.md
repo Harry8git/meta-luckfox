@@ -20,76 +20,26 @@ The aim - abbility to load system, capture and encode video without outdated Luc
 5. `rkaiq` - `rkaiq-2025_08_11` version from JeffyCN mirrors repository;
 6. `gstreamer-rockchip` - from JeffyCN mirrors repository;
 7. `dts` - from luckfox SDK
+8. `rootfs-resize` to grow the rootfs partition to fill the SD/eMMC on first boot, and misc `systemd` tweaks.
 
 ## How it even possible
 
 
-A Yocto/BitBake layer providing BSP and multimedia support for the **Luckfox
-Pico Pro/Max** board (Rockchip RV1106), targeting the `wrynose` release
-series.
-
-It provides:
-
-- A `luckfox-pico-pro-max` machine (RV1106, Cortex-A7).
-- Rockchip U-Boot and a 6.6 Linux kernel with out-of-tree patches enabling
-  the RV1106 VEPU540C hardware video encoder (see "How it works" below).
-- Rockchip multimedia stack: `rockchip-mpp`, `rockchip-librga`,
-  `rockchip-rkaiq` (ISP/3A), `gstreamer1.0-rockchip`, camera init scripts,
-  and vendor ISP calibration data (`luckfox-iqfiles`).
-- `rootfs-resize` to grow the rootfs partition to fill the SD/eMMC on first
-  boot, and misc `systemd` tweaks.
-
-## Dependencies
-
-This layer depends on `openembedded-core` and `meta-openembedded/meta-oe`.
-
-```
-URI: https://git.openembedded.org/bitbake
-branch: yocto-6.0.2
-
-URI: https://git.openembedded.org/openembedded-core
-branch: yocto-6.0.2
-
-URI: https://git.yoctoproject.org/meta-yocto
-branch: yocto-6.0.2
-
-URI: https://github.com/openembedded/meta-openembedded.git
-branch: wrynose
-```
-
-## Adding this layer to your build
-
+## How to test
+1. Prepare workspace
 ```sh
-mkdir -p external/layers
-git clone -b yocto-6.0.2 https://git.openembedded.org/bitbake ./external/layers/bitbake
-git clone -b yocto-6.0.2 https://git.openembedded.org/openembedded-core ./external/layers/openembedded-core
-git clone -b yocto-6.0.2 https://git.yoctoproject.org/meta-yocto ./external/layers/meta-yocto
-git clone -b wrynose https://github.com/openembedded/meta-openembedded.git ./external/layers/meta-openembedded
-
-source ./external/layers/openembedded-core/oe-init-build-env build
-
-bitbake-layers add-layer /path/to/meta-luckfox
-bitbake-layers add-layer /path/to/external/layers/meta-openembedded/meta-oe
+mkdir lfbuild
+cd lfbuild
+git clone https://github.com/buldo/meta-luckfox.git
+git clone -b yocto-6.0.2 https://git.openembedded.org/bitbake 
+git clone -b yocto-6.0.2 https://git.openembedded.org/openembedded-core
+source ./openembedded-core/oe-init-build-env build
+bitbake-layers add-layer ./meta-luckfox/
 ```
 
-Then set the machine in `build/conf/local.conf`:
-
+2. Edit `build/conf/local.conf`
 ```
 MACHINE = "luckfox-pico-pro-max"
-```
-
-Build:
-
-```sh
-bitbake core-image-minimal        # or core-image-minimal-dev
-```
-
-### Example `local.conf` additions
-
-A minimal headless capture/encode/stream image (v4l2 capture -> hw encode ->
-RTP/UDP) needs roughly the following in `local.conf`:
-
-```
 IMAGE_INSTALL:append = " \
     rockchip-mpp \
     rockchip-mpp-demos \
@@ -131,6 +81,42 @@ VIRTUAL-RUNTIME_login_manager = "shadow-base"
 
 # systemd-resolved is enabled via recipes-core/systemd/systemd_%.bbappend
 IMAGE_INSTALL:append = " systemd-networkd systemd-conf systemd-resolved-enable openssh-sftp-server"
+``` 
+
+3. Build system
+
+
+## Adding this layer to your build
+
+```sh
+
+git clone -b yocto-6.0.2 https://git.openembedded.org/openembedded-core 
+git clone -b yocto-6.0.2 https://git.yoctoproject.org/meta-yocto 
+git clone -b wrynose https://github.com/openembedded/meta-openembedded.git 
+
+source ./external/layers/openembedded-core/oe-init-build-env build
+
+bitbake-layers add-layer /path/to/meta-luckfox
+bitbake-layers add-layer /path/to/external/layers/meta-openembedded/meta-oe
+```
+
+Then set the machine in `build/conf/local.conf`:
+
+
+
+Build:
+
+```sh
+bitbake core-image-minimal        # or core-image-minimal-dev
+```
+
+### Example `local.conf` additions
+
+A minimal headless capture/encode/stream image (v4l2 capture -> hw encode ->
+RTP/UDP) needs roughly the following in `local.conf`:
+
+```
+
 ```
 
 ## Dev notes
