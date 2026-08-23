@@ -1,4 +1,28 @@
-# meta-luckfox
+# meta-luckfox with blob-free video pipeline for RV1106
+
+## Contribution welcome
+If you able to add more hardware and test it - PR welcome
+
+## WARNING
+1. This layer created mostly by AI
+2. This layer not tested for production
+3. Developer tested only for luckfox pico pro max
+
+## What is it
+This layers provides support for Luckfox Pico Pro Max.  
+The aim - abbility to load system, capture and encode video without outdated Luckfox SDK.  
+
+## What is inside
+1. `u-boot` - `next-dev` branch from rockchip-linux repository;
+2. `kernel` - `develop-6.6` branch from rockchip-linux repository;
+3. `librga` - `linux-rga-multi` branch from JeffyCN mirrors repository;
+4. `mpp` - `develop` branch from rockchip-linux repository;
+5. `rkaiq` - `rkaiq-2025_08_11` version from JeffyCN mirrors repository;
+6. `gstreamer-rockchip` - from JeffyCN mirrors repository;
+7. `dts` - from luckfox SDK
+
+## How it even possible
+
 
 A Yocto/BitBake layer providing BSP and multimedia support for the **Luckfox
 Pico Pro/Max** board (Rockchip RV1106), targeting the `wrynose` release
