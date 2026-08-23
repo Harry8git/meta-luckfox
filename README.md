@@ -23,7 +23,9 @@ The aim - abbility to load system, capture and encode video without outdated Luc
 8. `rootfs-resize` to grow the rootfs partition to fill the SD/eMMC on first boot, and misc `systemd` tweaks.
 
 ## How it even possible
-
+RV1106 has the same encoder IP as RK3528.
+This layer carries patches to the kernel and `rockchip-mpp` that enable using the RV1106 encoder the same way it's used on RK3528.  
+Also for mainline yocto gstrestreamer some patches also mandatory and provided
 
 ## How to test
 1. Prepare workspace
@@ -33,8 +35,10 @@ cd lfbuild
 git clone https://github.com/buldo/meta-luckfox.git
 git clone -b yocto-6.0.2 https://git.openembedded.org/bitbake 
 git clone -b yocto-6.0.2 https://git.openembedded.org/openembedded-core
+git clone -b wrynose https://github.com/openembedded/meta-openembedded.git
 source ./openembedded-core/oe-init-build-env build
 bitbake-layers add-layer ./meta-luckfox/
+bitbake-layers add-layer ./meta-openembedded/meta-oe
 ```
 
 2. Edit `build/conf/local.conf`
@@ -84,39 +88,8 @@ IMAGE_INSTALL:append = " systemd-networkd systemd-conf systemd-resolved-enable o
 ``` 
 
 3. Build system
-
-
-## Adding this layer to your build
-
-```sh
-
-git clone -b yocto-6.0.2 https://git.openembedded.org/openembedded-core 
-git clone -b yocto-6.0.2 https://git.yoctoproject.org/meta-yocto 
-git clone -b wrynose https://github.com/openembedded/meta-openembedded.git 
-
-source ./external/layers/openembedded-core/oe-init-build-env build
-
-bitbake-layers add-layer /path/to/meta-luckfox
-bitbake-layers add-layer /path/to/external/layers/meta-openembedded/meta-oe
-```
-
-Then set the machine in `build/conf/local.conf`:
-
-
-
-Build:
-
 ```sh
 bitbake core-image-minimal        # or core-image-minimal-dev
-```
-
-### Example `local.conf` additions
-
-A minimal headless capture/encode/stream image (v4l2 capture -> hw encode ->
-RTP/UDP) needs roughly the following in `local.conf`:
-
-```
-
 ```
 
 ## Dev notes
@@ -136,35 +109,11 @@ Add:
 kernel.apparmor_restrict_unprivileged_userns=0
 ```
 
-### Kernel-only rebuild loop
-
-```sh
-source ./external/layers/openembedded-core/oe-init-build-env build
-bitbake -c cleansstate linux-rockchip
-bitbake linux-rockchip
-```
-
 ### How to test the encoder
 
 ```sh
 mpi_enc_test -w 1280 -h 720 -t 7 -n 100 -o /tmp/out.h264
 ```
 
-### How to test the camera (i2c)
-
-```sh
-i2cdetect -y -r 4
-```
-
-### How it works
-
-RV1106 has the same encoder IP as RK3528. This layer carries patches to the
-kernel and `rockchip-mpp` that enable using the RV1106 encoder the same way
-it's used on RK3528.
-
-## Patches
-
-Please send patches/pull requests to the repository, or contact the
-maintainer directly.
-
-Maintainer: Roman Buldygin <froooks@gmail.com>
+Idea by: Roman Buldygin
+Written by: GitHub Copilot
