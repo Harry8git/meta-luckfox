@@ -1,0 +1,39 @@
+From be3679a65db5c2ae0ca327313d66ca6a126eebde Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Sun, 12 Jul 2026 21:28:39 +0000
+Subject: [PATCH] cmake: fix Release -g strip corrupting OE -ffile-prefix-map
+ paths
+
+MPP's Release branch removes -g from CMAKE_C/CXX_FLAGS with the regex
+"-g[^ ]*". That regex is unanchored, so it also matches the "-g" inside
+unrelated flag values - notably OpenEmbedded's cross paths that contain
+"-oe-linux-gnueabi" in -ffile-prefix-map=... arguments. The tail of such a
+flag gets deleted, producing e.g.
+
+  cc1: error: invalid argument '.../work/...-oe-linux' to '-ffile-prefix-map'
+
+and the whole build fails in Release mode. Anchor the match to a standalone
+"-g" token (start of string or preceded by a space) so only real -g options
+are stripped.
+
+Upstream-Status: Pending
+---
+ CMakeLists.txt | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 3295e1ef2..0192b63d6 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -124,9 +124,9 @@ endif()
+ 
+ if(${CMAKE_BUILD_TYPE} MATCHES "Release")
+     # remove -g option for high version ndk
+-    string(REGEX REPLACE "-g[^ ]*" "" TMP "${CMAKE_C_FLAGS}")
++    string(REGEX REPLACE "(^| )-g[^ ]*" " " TMP "${CMAKE_C_FLAGS}")
+     string(REGEX REPLACE "[ ]+" " " CMAKE_C_FLAGS "${TMP}")
+-    string(REGEX REPLACE "-g[^ ]*" "" TMP "${CMAKE_CXX_FLAGS}")
++    string(REGEX REPLACE "(^| )-g[^ ]*" " " TMP "${CMAKE_CXX_FLAGS}")
+     string(REGEX REPLACE "[ ]+" " " CMAKE_CXX_FLAGS "${TMP}")
+ 
+     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3 -DNDEBUG")

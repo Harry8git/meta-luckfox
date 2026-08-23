@@ -1,2 +1,160 @@
 # meta-luckfox
-Blobs-free layer for luckfox rv1106
+
+A Yocto/BitBake layer providing BSP and multimedia support for the **Luckfox
+Pico Pro/Max** board (Rockchip RV1106), targeting the `wrynose` release
+series.
+
+It provides:
+
+- A `luckfox-pico-pro-max` machine (RV1106, Cortex-A7).
+- Rockchip U-Boot and a 6.6 Linux kernel with out-of-tree patches enabling
+  the RV1106 VEPU540C hardware video encoder (see "How it works" below).
+- Rockchip multimedia stack: `rockchip-mpp`, `rockchip-librga`,
+  `rockchip-rkaiq` (ISP/3A), `gstreamer1.0-rockchip`, camera init scripts,
+  and vendor ISP calibration data (`luckfox-iqfiles`).
+- `rootfs-resize` to grow the rootfs partition to fill the SD/eMMC on first
+  boot, and misc `systemd` tweaks.
+
+## Dependencies
+
+This layer depends on `openembedded-core` and `meta-openembedded/meta-oe`.
+
+```
+URI: https://git.openembedded.org/bitbake
+branch: yocto-6.0.2
+
+URI: https://git.openembedded.org/openembedded-core
+branch: yocto-6.0.2
+
+URI: https://git.yoctoproject.org/meta-yocto
+branch: yocto-6.0.2
+
+URI: https://github.com/openembedded/meta-openembedded.git
+branch: wrynose
+```
+
+## Adding this layer to your build
+
+```sh
+mkdir -p external/layers
+git clone -b yocto-6.0.2 https://git.openembedded.org/bitbake ./external/layers/bitbake
+git clone -b yocto-6.0.2 https://git.openembedded.org/openembedded-core ./external/layers/openembedded-core
+git clone -b yocto-6.0.2 https://git.yoctoproject.org/meta-yocto ./external/layers/meta-yocto
+git clone -b wrynose https://github.com/openembedded/meta-openembedded.git ./external/layers/meta-openembedded
+
+source ./external/layers/openembedded-core/oe-init-build-env build
+
+bitbake-layers add-layer /path/to/meta-luckfox
+bitbake-layers add-layer /path/to/external/layers/meta-openembedded/meta-oe
+```
+
+Then set the machine in `build/conf/local.conf`:
+
+```
+MACHINE = "luckfox-pico-pro-max"
+```
+
+Build:
+
+```sh
+bitbake core-image-minimal        # or core-image-minimal-dev
+```
+
+### Example `local.conf` additions
+
+A minimal headless capture/encode/stream image (v4l2 capture -> hw encode ->
+RTP/UDP) needs roughly the following in `local.conf`:
+
+```
+IMAGE_INSTALL:append = " \
+    rockchip-mpp \
+    rockchip-mpp-demos \
+    rockchip-mpp-vpu \
+    luckfox-iqfiles \
+    rockchip-librga \
+    rockchip-rkaiq \
+    rockchip-rkaiq-dev \
+    rockchip-rkaiq-server \
+    rockchip-camera-init \
+    gstreamer1.0 \
+    gstreamer1.0-plugins-base-videoconvertscale \
+    gstreamer1.0-plugins-good-video4linux2 \
+    gstreamer1.0-plugins-good-rtp \
+    gstreamer1.0-plugins-good-udp \
+    gstreamer1.0-plugins-good-isomp4 \
+    gstreamer1.0-plugins-bad-videoparsersbad \
+    gstreamer1.0-rockchip-rockchipmpp \
+    i2c-tools \
+    v4l-utils \
+    ethtool \
+    iproute2 \
+    "
+
+# Upstream default PACKAGECONFIGs for gst-plugins-base/good/bad pull in a
+# large, mostly-unused dependency tree (flac, gdk-pixbuf, cairo, pango,
+# jpeg, lame, mpg123, speex, taglib, theora, vorbis, ogg, ...). None of it
+# is needed for a "v4l2src ! mpph264enc ! rtph264pay ! udpsink" pipeline,
+# so trim these down to just orc (SIMD JIT) + v4l2.
+PACKAGECONFIG:pn-gstreamer1.0-plugins-base = "${GSTREAMER_ORC}"
+PACKAGECONFIG:pn-gstreamer1.0-plugins-good = "${GSTREAMER_ORC} v4l2"
+PACKAGECONFIG:pn-gstreamer1.0-plugins-bad = "${GSTREAMER_ORC}"
+
+DISTRO_FEATURES:remove = "sysvinit x11 wayland opengl vulkan directfb"
+DISTRO_FEATURES:append = " systemd"
+VIRTUAL-RUNTIME_init_manager = "systemd"
+VIRTUAL-RUNTIME_initscripts = "systemd-compat-units"
+VIRTUAL-RUNTIME_login_manager = "shadow-base"
+
+# systemd-resolved is enabled via recipes-core/systemd/systemd_%.bbappend
+IMAGE_INSTALL:append = " systemd-networkd systemd-conf systemd-resolved-enable openssh-sftp-server"
+```
+
+## Dev notes
+
+### One-time host setup
+
+AppArmor's unprivileged user namespace restriction breaks some build tasks;
+disable it:
+
+```sh
+sudo nano /etc/sysctl.d/60-apparmor-namespace.conf
+```
+
+Add:
+
+```
+kernel.apparmor_restrict_unprivileged_userns=0
+```
+
+### Kernel-only rebuild loop
+
+```sh
+source ./external/layers/openembedded-core/oe-init-build-env build
+bitbake -c cleansstate linux-rockchip
+bitbake linux-rockchip
+```
+
+### How to test the encoder
+
+```sh
+mpi_enc_test -w 1280 -h 720 -t 7 -n 100 -o /tmp/out.h264
+```
+
+### How to test the camera (i2c)
+
+```sh
+i2cdetect -y -r 4
+```
+
+### How it works
+
+RV1106 has the same encoder IP as RK3528. This layer carries patches to the
+kernel and `rockchip-mpp` that enable using the RV1106 encoder the same way
+it's used on RK3528.
+
+## Patches
+
+Please send patches/pull requests to the repository, or contact the
+maintainer directly.
+
+Maintainer: Roman Buldygin <froooks@gmail.com>

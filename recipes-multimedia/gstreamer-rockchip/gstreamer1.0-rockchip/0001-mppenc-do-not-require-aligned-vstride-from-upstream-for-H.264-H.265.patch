@@ -1,0 +1,95 @@
+From 34b122af4ee8197695a867247ba41d44328810ed Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Thu, 6 Aug 2026 13:52:20 +0000
+Subject: [PATCH 1/2] mppenc: do not require aligned vstride from upstream for
+ H.264/H.265
+
+VEPU5xx only uses ver_stride to compute the chroma plane base address.
+The actual frame height is programmed through pic_hd8_m1/pic_hfill, so the
+hardware pads the picture internally and never reads beyond the real
+height. Requiring an aligned vstride from upstream therefore serves no
+purpose for H.264/H.265 and only forces a per-frame RGA/software copy.
+
+Make unaligned vstride the default for H.264 and H.265, while keeping the
+old conservative alignment for MJPEG and VP8. The existing
+GST_MPP_ENC_UNALIGNED_VSTRIDE environment variable still forces the
+unaligned path, and GST_MPP_ENC_ALIGNED_VSTRIDE is added as an emergency
+override to restore the old behaviour.
+
+Upstream-Status: Pending
+---
+ gst/rockchipmpp/gstmppenc.c | 26 ++++++++++++++++++--------
+ 1 file changed, 18 insertions(+), 8 deletions(-)
+
+diff --git a/gst/rockchipmpp/gstmppenc.c b/gst/rockchipmpp/gstmppenc.c
+index 807d24b..c27e53a 100644
+--- a/gst/rockchipmpp/gstmppenc.c
++++ b/gst/rockchipmpp/gstmppenc.c
+@@ -154,14 +154,24 @@ gst_mpp_enc_supported (MppCodingType mpp_type)
+   return TRUE;
+ }
+ 
+-gboolean
+-gst_mpp_enc_video_info_align (GstVideoInfo * info)
++static gboolean
++gst_mpp_enc_video_info_align (GstMppEnc * self, GstVideoInfo * info)
+ {
+   gint vstride = 0;
+ 
+-  /* Allow skipping vstride aligning for RKVENC */
+-  if (g_getenv ("GST_MPP_ENC_UNALIGNED_VSTRIDE"))
++  /* VEPU5xx uses ver_stride only to compute the chroma plane offset; the
++   * real height is communicated separately and the hardware pads the picture
++   * internally (pic_hfill). For H.264/H.265 there is therefore no reason to
++   * force upstream to provide an aligned vstride, which would only trigger an
++   * unnecessary copy/RGA conversion. Keep the conservative alignment for the
++   * other codecs where this has not been verified. */
++  if (g_getenv ("GST_MPP_ENC_ALIGNED_VSTRIDE")) {
++    vstride = 0;
++  } else if (g_getenv ("GST_MPP_ENC_UNALIGNED_VSTRIDE") ||
++      self->mpp_type == MPP_VIDEO_CodingAVC ||
++      self->mpp_type == MPP_VIDEO_CodingHEVC) {
+     vstride = GST_MPP_VIDEO_INFO_VSTRIDE (info);
++  }
+ 
+   return gst_mpp_video_info_align (info, 0, vstride);
+ }
+@@ -641,7 +651,7 @@ gst_mpp_enc_set_format (GstVideoEncoder * encoder, GstVideoCodecState * state)
+ 
+   *info = state->info;
+ 
+-  if (!gst_mpp_enc_video_info_align (info))
++  if (!gst_mpp_enc_video_info_align (self, info))
+     return FALSE;
+ 
+   format = gst_mpp_gst_format_to_mpp_format (GST_VIDEO_INFO_FORMAT (info));
+@@ -673,7 +683,7 @@ gst_mpp_enc_set_format (GstVideoEncoder * encoder, GstVideoCodecState * state)
+     gst_mpp_video_info_update_format (info,
+         gst_mpp_mpp_format_to_gst_format (format), width, height);
+ 
+-    if (!gst_mpp_enc_video_info_align (info))
++    if (!gst_mpp_enc_video_info_align (self, info))
+       return FALSE;
+ 
+     GST_INFO_OBJECT (self, "converting to aligned %s",
+@@ -747,7 +757,7 @@ gst_mpp_enc_propose_allocation (GstVideoEncoder * encoder, GstQuery * query)
+   if (!gst_video_info_from_caps (&info, caps))
+     return FALSE;
+ 
+-  gst_mpp_enc_video_info_align (&info);
++  gst_mpp_enc_video_info_align (self, &info);
+   size = GST_VIDEO_INFO_SIZE (&info);
+ 
+   gst_video_alignment_reset (&align);
+@@ -842,7 +852,7 @@ gst_mpp_enc_convert (GstVideoEncoder * encoder, GstVideoCodecFrame * frame)
+    * can use the src buffer directly.
+    */
+   if (!gst_mpp_video_info_align (&dst_info, src_hstride, src_vstride) ||
+-      !gst_mpp_enc_video_info_align (&dst_info) ||
++      !gst_mpp_enc_video_info_align (self, &dst_info) ||
+       !gst_mpp_video_info_matched (&src_info, &dst_info)) {
+     /* Reset the temporarily modified dst video info. */
+     dst_info = self->info;
+-- 
+2.53.0
+

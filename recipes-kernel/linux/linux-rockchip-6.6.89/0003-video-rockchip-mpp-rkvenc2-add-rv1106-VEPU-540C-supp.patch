@@ -1,0 +1,39 @@
+From 2089f8ab0eed9f45ff2249c1389abf1fd6943c5c Mon Sep 17 00:00:00 2001
+From: meta-luckfox <dev@luckfox.local>
+Date: Sun, 21 Jun 2026 23:43:37 +0000
+Subject: [PATCH] video: rockchip: mpp: rkvenc2: add rv1106 VEPU 540C support
+
+The rv1106 SoC integrates a VEPU 540C video encoder, identical in register
+layout to the RK3528 encoder that is already supported by the rkvenc2
+driver.  rv1106 historically relied on a closed-source kernel module, so
+its device-tree node (compatible "rockchip,rkv-encoder-rv1106") had no
+match in the open-source driver.
+
+Wire the rv1106 compatible to the existing vepu540c device data, guarded by
+CONFIG_CPU_RV1106, mirroring the RK3528 entry.
+
+Upstream-Status: Pending
+---
+ drivers/video/rockchip/mpp/mpp_rkvenc2.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/video/rockchip/mpp/mpp_rkvenc2.c b/drivers/video/rockchip/mpp/mpp_rkvenc2.c
+index 266fb0772d89..2be7cb56f981 100644
+--- a/drivers/video/rockchip/mpp/mpp_rkvenc2.c
++++ b/drivers/video/rockchip/mpp/mpp_rkvenc2.c
+@@ -2836,6 +2836,12 @@ static const struct of_device_id mpp_rkvenc_dt_match[] = {
+ 		.data = &rkvenc_511_data,
+ 	},
+ #endif
++#ifdef CONFIG_CPU_RV1106
++	{
++		.compatible = "rockchip,rkv-encoder-rv1106",
++		.data = &rkvenc_540c_data,
++	},
++#endif
+ #ifdef CONFIG_CPU_RK3528
+ 	{
+ 		.compatible = "rockchip,rkv-encoder-rk3528",
+-- 
+2.53.0
+

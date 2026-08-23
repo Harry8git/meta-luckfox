@@ -1,0 +1,27 @@
+From a0ef1ef780557ac6f6ed127ed53889d6ef2afff2 Mon Sep 17 00:00:00 2001
+From: OE <oe@local>
+Date: Fri, 17 Jul 2026 23:23:46 +0000
+Subject: [PATCH] ipc_server: add missing <stdio.h> include in
+ MessageParser.hpp
+
+The header uses vsnprintf()/FILE-related APIs transitively but only
+included <cstdlib>/<cstdio> indirectly; building with a strict libstdc++
+can fail to see the C stdio declarations. Include <stdio.h> explicitly.
+
+Upstream-Status: Pending
+---
+ rkaiq/ipc_server/MessageParser.hpp | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/rkaiq/ipc_server/MessageParser.hpp b/rkaiq/ipc_server/MessageParser.hpp
+index 653fd1b..336a2a5 100644
+--- a/rkaiq/ipc_server/MessageParser.hpp
++++ b/rkaiq/ipc_server/MessageParser.hpp
+@@ -17,6 +17,7 @@
+ #ifndef ___MESSAGE_PARSER_H__
+ #define ___MESSAGE_PARSER_H__
+ 
++#include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+ 

@@ -1,0 +1,17 @@
+[Unit]
+Description=Rockchip AIQ 3A daemon
+After=basic.target
+# The 3A server needs the camera pipeline (rkcif/rkisp + sensor subdevs) up
+# before it can open the media/v4l-subdev nodes. rkcamera.service is a oneshot
+# (RemainAfterExit) that loads the camera modules, so order after it and pull it
+# in. The dependency is soft so images without rockchip-camera-init still boot.
+Wants=rkcamera.service
+After=rkcamera.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rkaiq_3A_server
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

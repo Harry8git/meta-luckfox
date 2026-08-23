@@ -1,0 +1,13 @@
+[Unit]
+Description=Load Rockchip camera pipeline kernel modules (CSI2-DPHY/CIF/ISP/sensors)
+DefaultDependencies=no
+After=systemd-udevd.service local-fs.target
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/rkcamera-load-modules.sh
+
+[Install]
+WantedBy=sysinit.target

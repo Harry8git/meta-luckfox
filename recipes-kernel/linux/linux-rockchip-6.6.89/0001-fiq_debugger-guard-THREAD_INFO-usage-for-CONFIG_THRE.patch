@@ -1,0 +1,44 @@
+From f646f06773b4da8d4e27b2fe2d411c04662ceab3 Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Thu, 11 Jun 2026 14:13:58 +0000
+Subject: [PATCH 1/2] fiq_debugger: guard THREAD_INFO() usage for
+ CONFIG_THREAD_INFO_IN_TASK
+
+On ARM, CONFIG_THREAD_INFO_IN_TASK is always selected unconditionally
+in arch/arm/Kconfig. When it is set, fiq_debugger_priv.h does NOT
+define the THREAD_INFO(sp) macro, causing a build failure when
+fiq_debugger.c uses THREAD_INFO(svc_sp)->cpu inside #ifdef CONFIG_FIQ_GLUE.
+
+Replace with raw_smp_processor_id(): the fiq_debugger_fiq() callback
+executes in FIQ context on the exact CPU that triggered the interrupt,
+so the current CPU id is semantically equivalent.
+
+The same #ifdef THREAD_INFO guard pattern is already used in
+fiq_debugger_arm.c.
+
+Upstream-Status: Pending
+---
+ drivers/soc/rockchip/fiq_debugger/fiq_debugger.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/soc/rockchip/fiq_debugger/fiq_debugger.c b/drivers/soc/rockchip/fiq_debugger/fiq_debugger.c
+index 59eeaf1b3a53..d6fbade1d512 100644
+--- a/drivers/soc/rockchip/fiq_debugger/fiq_debugger.c
++++ b/drivers/soc/rockchip/fiq_debugger/fiq_debugger.c
+@@ -1061,7 +1061,13 @@ static void fiq_debugger_fiq(struct fiq_glue_handler *h,
+ {
+ 	struct fiq_debugger_state *state =
+ 		container_of(h, struct fiq_debugger_state, handler);
++#ifdef THREAD_INFO
+ 	unsigned int this_cpu = THREAD_INFO(svc_sp)->cpu;
++#else
++	/* CONFIG_THREAD_INFO_IN_TASK: THREAD_INFO(sp) macro is not available.
++	 * In FIQ context we execute on the CPU that fired the FIQ. */
++	unsigned int this_cpu = raw_smp_processor_id();
++#endif
+ 	bool need_irq;
+ 
+ 	need_irq = fiq_debugger_handle_uart_interrupt(state, this_cpu, regs,
+-- 
+2.53.0
+

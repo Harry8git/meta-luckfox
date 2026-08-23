@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Mon, 13 Jul 2026 12:00:00 +0000
+Subject: [PATCH] video: rockchip: mpp: reject non-contiguous buffers on
+ no-iommu devices
+
+On SoCs without an IOMMU (e.g. rv1106/rv1103) mpp_dma_import_fd() only
+programs the first scatter-gather segment address into the hardware
+(buffer->iova = sg_dma_address(sgt->sgl)).  If user space imports a buffer
+that is not a single physically contiguous run - for example one allocated
+from the non-contiguous dma-heap "system" pool - the codec DMA walks off
+the end of the first segment into unrelated or unmapped DRAM.  In the best
+case this raises a VEPU write-bus error and a device reset; in the worst
+case it silently corrupts whatever memory the stray access lands on, which
+on a no-iommu system is unprotected.
+
+Detect the condition (iommu_info is NULL on a no-iommu device and the first
+segment does not cover the whole dma-buf) and fail the import with a clear
+error instead of trusting a truncated address.  Buffers destined for the
+hardware on such SoCs must be allocated from the CMA dma-heap.
+
+Upstream-Status: Pending
+---
+ drivers/video/rockchip/mpp/mpp_iommu.c | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/drivers/video/rockchip/mpp/mpp_iommu.c b/drivers/video/rockchip/mpp/mpp_iommu.c
+index ff93d7f75e6c..ee9f83f7614b 100644
+--- a/drivers/video/rockchip/mpp/mpp_iommu.c
++++ b/drivers/video/rockchip/mpp/mpp_iommu.c
+@@ -253,6 +253,22 @@ struct mpp_dma_buffer *mpp_dma_import_fd(struct mpp_iommu_info *iommu_info,
+ 		mpp_err("dma_buf_map_attachment fd %d failed(%d)\n", fd, ret);
+ 		goto fail_map;
+ 	}
++	/*
++	 * On a device with no IOMMU only the first scatter-gather segment
++	 * address is programmed into the hardware, so a buffer that is not a
++	 * single physically contiguous run would make the codec DMA overrun
++	 * into unrelated/unmapped DRAM.  Reject it here with a clear message
++	 * instead of silently corrupting memory (userspace must allocate such
++	 * buffers from the CMA dma-heap).
++	 */
++	if (!iommu_info && sg_dma_len(sgt->sgl) < dmabuf->size) {
++		dev_err(dma->dev,
++			"fd %d: non-contiguous buffer on no-iommu device (first segment %u < size %zu); allocate from the CMA dma-heap\n",
++			fd, sg_dma_len(sgt->sgl), dmabuf->size);
++		ret = -EINVAL;
++		dma_buf_unmap_attachment(attach, sgt, buffer->dir);
++		goto fail_map;
++	}
+ 	buffer->iova = sg_dma_address(sgt->sgl);
+ 	buffer->size = sg_dma_len(sgt->sgl);
+ 	buffer->attach = attach;
+-- 
+2.53.0

@@ -1,0 +1,28 @@
+From 34b4625f664720d5f25cc2c425f71b5eba3f10cd Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Thu, 11 Jun 2026 14:57:46 +0000
+Subject: [PATCH 2/2] mm/pgtable: export __pte_offset_map_lock for out-of-tree
+ modules
+
+Rockchip vendor drivers (e.g. rga3) use pte_offset_map_lock() which is a
+static inline wrapper around __pte_offset_map_lock(). When built as modules
+they require __pte_offset_map_lock to be exported.
+
+Upstream-Status: Inappropriate [Rockchip vendor tree workaround]
+Signed-off-by: Build System <build@localhost>
+---
+ mm/pgtable-generic.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/mm/pgtable-generic.c b/mm/pgtable-generic.c
+index a78a4adf711a..03ccb501d9fc 100644
+--- a/mm/pgtable-generic.c
++++ b/mm/pgtable-generic.c
+@@ -380,3 +380,4 @@ pte_t *__pte_offset_map_lock(struct mm_struct *mm, pmd_t *pmd,
+ 	pte_unmap_unlock(pte, ptl);
+ 	goto again;
+ }
++EXPORT_SYMBOL(__pte_offset_map_lock);
+-- 
+2.53.0
+

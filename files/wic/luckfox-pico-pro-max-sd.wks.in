@@ -1,0 +1,77 @@
+# short-description: SD/eMMC image for Luckfox Pico Pro Max
+# long-description: GPT layout -- every region on the card, including the
+#                   Rockchip loader blobs and the vendor-storage reservation,
+#                   is a real labelled GPT partition entry, so nothing looks
+#                   like unallocated space that a tool (or a person) could
+#                   mistake for free and overwrite.
+#
+# Boot flow (SD and eMMC):
+#   BROM -> idbloader (LBA 64 / 32 KiB) -> uboot.img -> boot_fit finds 'boot' partition
+#   by GPT label -> loads FIT -> kernel mounts rootfs by PARTLABEL=rootfs
+#   (see CONFIG_EFI_PARTITION + CONFIG_CMDLINE in the kernel defconfig).
+#
+# Every offset below is load-bearing and must stay exact:
+#   * idbloader @ LBA 64    - BROM scans for the SPL/DDR-init blob here first.
+#   * uboot     @ LBA 1088  - matches CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=
+#                             0x440, set in u-boot-rockchip_git.bb's do_configure.
+#   * vnvm      @ LBA 7168  - matches EMMC_VENDOR_PART_OFFSET (arch/arm/mach-
+#                             rockchip/vendor.c, U-Boot) and the equivalent
+#                             constant the old 5.10 SDK kernel driver used;
+#                             this is where U-Boot's CONFIG_ROCKCHIP_VENDOR_
+#                             PARTITION reads/writes vendor data (persistent
+#                             LAN MAC among other things) directly by raw
+#                             sector, with no GPT lookup on its own -- this
+#                             partition entry exists purely so the region is
+#                             visibly reserved instead of looking like free
+#                             space.
+#   * env       @ LBA 7680  - matches CONFIG_ENV_OFFSET (0x3C0000) set in
+#                             u-boot-rockchip_git.bb's do_configure. Holds two
+#                             back-to-back ENVF copies (primary @ LBA 7680,
+#                             redundant @ LBA 7744, matching CONFIG_ENV_
+#                             OFFSET_REDUND=0x3C8000), each read directly by
+#                             fixed byte offset -- like vnvm, ENVF does no GPT
+#                             lookup of its own; the partition entry only
+#                             keeps the region from looking like free space.
+#   * boot      @ LBA 8192  (4 MiB) - clear of the env region above.
+
+bootloader --ptable gpt
+
+# -- Rockchip loader blobs -----------------------------------------------------
+# idbloader (SPL + DDR init).  BROM searches for it at LBA 64 (32 KiB) first.
+# --fstype=none keeps rawcopy from stamping a FAT filesystem label onto the
+# raw blob (the GPT partition name is set independently via --label).
+part idbloader --source rawcopy --sourceparams="file=idblock.img" --ondisk mmcblk0 --fstype=none --label idbloader --offset 32K --fixed-size 512K
+
+# u-boot.img (U-Boot FIT: u-boot + TEE + MCU firmware) immediately after idbloader.
+part uboot --source rawcopy --sourceparams="file=uboot.img" --ondisk mmcblk0 --fstype=none --label uboot --offset 544K --fixed-size 256K
+
+# -- Vendor storage reservation -------------------------------------------------
+# Raw sectors reserved for U-Boot's vendor-storage partition (LAN MAC, serial
+# number, ...). No --source: the region starts zeroed, which is exactly the
+# "uninitialized" state vendor_storage_init() already handles on first read
+# (invalid tag -> fresh vendor block created and written back).
+part vnvm --ondisk mmcblk0 --fstype=none --label vnvm --offset 3584K --fixed-size 256K
+
+# -- ENVF environment -----------------------------------------------------------
+# Primary + redundant ENVF copies (env.img, built by u-boot-rockchip_git.bb),
+# read directly by U-Boot at CONFIG_ENV_OFFSET/CONFIG_ENV_OFFSET_REDUND --
+# not looked up by GPT label. The partition entry exists so this region isn't
+# mistaken for free space and overwritten.
+part env --source rawcopy --sourceparams="file=env.img" --ondisk mmcblk0 --fstype=none --label env --offset 3840K --fixed-size 256K
+
+# -- OS partitions -------------------------------------------------------------
+# Boot FIT image (kernel zImage + DTB).  Rockchip u-boot locates it by the GPT
+# label "boot" via part_get_info_by_name() in fit_get_blob().
+# --fstype=none prevents rawcopy from trying to stamp a FAT filesystem label
+# onto the raw FIT binary (the GPT partition name is set independently).
+# Aligned to 4 MiB -> starts clear of the vnvm reservation above.
+part boot --source rawcopy --sourceparams="file=boot.img" --ondisk mmcblk0 --fstype=none --label boot --offset 4096K --size 32M --align 1024
+
+# Empty ext4 data partition (created on first boot by userspace or init scripts).
+# TODO: Add if needed
+# part userdata --source empty --ondisk mmcblk0 --fstype=ext4 --label userdata --size 256M --align 1024
+
+# Root filesystem.  The kernel finds it by PARTLABEL=rootfs; this relies on
+# CONFIG_EFI_PARTITION=y (GPT label parsing) in the kernel defconfig.
+part / --source rootfs --ondisk mmcblk0 --fstype=ext4 --label rootfs --align 1024
+

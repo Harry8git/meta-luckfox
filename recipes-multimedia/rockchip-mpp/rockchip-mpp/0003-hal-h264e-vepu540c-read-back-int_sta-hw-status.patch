@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Mon, 13 Jul 2026 11:00:00 +0000
+Subject: [PATCH] hal/h264e/vepu540c: read back int_sta hw status register
+
+The H.264 VEPU 540C HAL only registered a read-back request for the
+status class (reg_st at VEPU540C_STATUS_OFFSET) before submitting the
+task, but hal_h264e_vepu540c_status_check() inspects
+reg_ctl.common.int_sta.enc_done_sta, which lives in the control class at
+offset VEPU540C_REG_BASE_HW_STATUS (0x2c) and was therefore never fetched
+from the kernel.
+
+The rkvenc2 kernel driver deliberately injects the saved hardware
+interrupt status into that register on task completion ("revert hack for
+irq status" in rkvenc_finish()), but that value is only copied back to
+user space for register ranges that user space asked to read. Because the
+control class was written but never read, status_check() always saw
+int_sta == 0 and reported:
+
+  hal_h264e_vepu540c: hal_h264e_vepu540c_status_check enc not done \
+      hw_status: 0x00000000
+
+even though the encoder completed every frame normally (kernel logs
+"irq_status: 00000001" = enc_done, no timeout, no error). Each frame was
+then discarded with size 0.
+
+The H.265 (H265eV540cStatusElem) and VEPU 580 H.264 HALs already read the
+int_sta register back explicitly; mirror the VEPU 580 sequence here by
+adding the missing MPP_DEV_REG_RD for reg_ctl.common.int_sta at
+VEPU540C_REG_BASE_HW_STATUS before the status-class read-back.
+
+This is most visible on encoder-only SoCs such as RV1106/RV1103, where
+mpi_enc_test is the primary bring-up test.
+
+Upstream-Status: Pending
+---
+ mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c b/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
+index ab0fac447..d5e339c4c 100644
+--- a/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
++++ b/mpp/hal/rkenc/h264e/hal_h264e_vepu540c.c
+@@ -1590,6 +1590,16 @@ static MPP_RET hal_h264e_vepu540c_gen_regs(void *hal, HalEncTask *task)
+             break;
+         }
+ 
++        rd_cfg.reg = &ctx->regs_set->reg_ctl.common.int_sta;
++        rd_cfg.size = sizeof(RK_U32);
++        rd_cfg.offset = VEPU540C_REG_BASE_HW_STATUS;
++
++        ret = mpp_dev_ioctl(ctx->dev, MPP_DEV_REG_RD, &rd_cfg);
++        if (ret) {
++            mpp_err_f("set register read failed %d\n", ret);
++            break;
++        }
++
+         rd_cfg.reg = &ctx->regs_set->reg_st;
+         rd_cfg.size = sizeof(ctx->regs_set->reg_st);
+         rd_cfg.offset = VEPU540C_STATUS_OFFSET;
+-- 
+2.53.0

@@ -1,0 +1,78 @@
+From 7c47d63cb52dd471aa0cbccf01d785cbba7a04b1 Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Thu, 6 Aug 2026 13:52:20 +0000
+Subject: [PATCH 2/2] mpp: remember when RGA cannot use virtual-address input
+
+On SoCs without an IOMMU, passing a virtual address to RGA always fails.
+The kernel logs several lines per frame and gst_mpp_rga_do_convert()
+falls back to a software copy, but nothing remembers the failure, so the
+same doomed RGA call is retried for every frame.
+
+Add a static flag that disables the virtual-address RGA path after the
+first failure, returning FALSE immediately for subsequent non-dmabuf
+buffers. This is discovered at runtime, so platforms with IOMMU where the
+virtual-address path works are unaffected. Also unmap the input buffer in
+the early return for an invalid rotation.
+
+Upstream-Status: Pending
+---
+ gst/rockchipmpp/gstmpp.c | 21 +++++++++++++++++++--
+ 1 file changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/gst/rockchipmpp/gstmpp.c b/gst/rockchipmpp/gstmpp.c
+index 7d7b875..2d06923 100644
+--- a/gst/rockchipmpp/gstmpp.c
++++ b/gst/rockchipmpp/gstmpp.c
+@@ -283,10 +283,13 @@ gst_mpp_rga_convert (GstBuffer * inbuf, GstVideoInfo * src_vinfo,
+ {
+   GstMapInfo mapinfo = { 0, };
+   gboolean ret;
++  gboolean src_mapped = FALSE;
+ 
+   rga_info_t src_info = { 0, };
+   rga_info_t dst_info = { 0, };
+ 
++  static gboolean rga_viraddr_allowed = TRUE;
++
+   if (!gst_mpp_rga_info_from_video_info (&src_info, src_vinfo))
+     return FALSE;
+ 
+@@ -306,19 +309,33 @@ gst_mpp_rga_convert (GstBuffer * inbuf, GstVideoInfo * src_vinfo,
+   }
+ 
+   if (src_info.fd <= 0) {
++    if (!rga_viraddr_allowed)
++      return FALSE;
++
+     gst_buffer_map (inbuf, &mapinfo, GST_MAP_READ);
+     src_info.virAddr = mapinfo.data;
++    src_mapped = TRUE;
+   }
+ 
+   dst_info.fd = gst_dmabuf_memory_get_fd (out_mem);
+ 
+   src_info.rotation = gst_mpp_rga_get_rotation (rotation);
+-  if (src_info.rotation < 0)
++  if (src_info.rotation < 0) {
++    if (src_mapped)
++      gst_buffer_unmap (inbuf, &mapinfo);
+     return FALSE;
++  }
+ 
+   ret = gst_mpp_rga_do_convert (&src_info, &dst_info);
+ 
+-  gst_buffer_unmap (inbuf, &mapinfo);
++  if (!ret && src_mapped) {
++    rga_viraddr_allowed = FALSE;
++    GST_WARNING ("RGA cannot work with non-dmabuf input on this platform, "
++        "source should provide dmabuf buffers");
++  }
++
++  if (src_mapped)
++    gst_buffer_unmap (inbuf, &mapinfo);
+   return ret;
+ }
+ 
+-- 
+2.53.0
+

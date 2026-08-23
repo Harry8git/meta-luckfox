@@ -1,0 +1,24 @@
+[Unit]
+Description=Grow root partition and filesystem to fill the disk
+Documentation=man:parted(8) man:resize2fs(8)
+DefaultDependencies=no
+ConditionPathIsReadWrite=/
+# Once rootfs-resize.sh has settled the disk (grown it, or determined there
+# is nothing it can/should do), it touches this marker. Checking it here
+# costs systemd a single stat(); on every later boot the unit is skipped
+# before parted/partx/resize2fs ever get forked. Re-flashing a fresh image
+# wipes /var/lib on that device, so the check "resets" for the new install.
+ConditionPathExists=!/var/lib/rootfs-resize/done
+After=systemd-udevd.service systemd-remount-fs.service
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=rootfs-resize
+ExecStart=@LIBEXECDIR@/rootfs-resize/rootfs-resize.sh
+StandardOutput=journal+console
+
+[Install]
+WantedBy=sysinit.target

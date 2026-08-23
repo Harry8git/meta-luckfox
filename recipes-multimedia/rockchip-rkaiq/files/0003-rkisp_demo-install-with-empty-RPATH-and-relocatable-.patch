@@ -1,0 +1,33 @@
+From 3f864641e7436725061b629876031154d616a439 Mon Sep 17 00:00:00 2001
+From: OE <oe@local>
+Date: Fri, 17 Jul 2026 23:23:46 +0000
+Subject: [PATCH] rkisp_demo: install with empty RPATH and relocatable __FILE__
+ macros
+
+Strip build-time absolute paths from the installed binary: build with
+the install RPATH (empty, since dependent libs are found via the
+target's own rpath/ld.so.conf) and remap __FILE__ macros to relative
+paths so debug strings do not leak the build sysroot layout.
+
+Upstream-Status: Inappropriate [OE-specific reproducible-build/packaging
+fixup; strips build-time absolute paths that only matter for OE's
+bit-for-bit and path-leak QA checks]
+---
+ rkisp_demo/CMakeLists.txt | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/rkisp_demo/CMakeLists.txt b/rkisp_demo/CMakeLists.txt
+index e2be154..c888846 100644
+--- a/rkisp_demo/CMakeLists.txt
++++ b/rkisp_demo/CMakeLists.txt
+@@ -237,3 +237,10 @@ else ()
+ endif()
+ target_link_libraries(rkisp_demo
+     m)
++
++# OE fixups: strip build-time absolute paths from the installed binary
++set_target_properties(rkisp_demo PROPERTIES
++    BUILD_WITH_INSTALL_RPATH TRUE
++    INSTALL_RPATH "")
++target_compile_options(rkisp_demo PRIVATE
++    "-fmacro-prefix-map=${CMAKE_SOURCE_DIR}=/")

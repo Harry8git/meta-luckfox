@@ -1,0 +1,4 @@
+# This is a layer repo, not a build workspace: ignore any local build/
+# checkout dirs a user may create alongside it (see README.md).
+external/
+build*/

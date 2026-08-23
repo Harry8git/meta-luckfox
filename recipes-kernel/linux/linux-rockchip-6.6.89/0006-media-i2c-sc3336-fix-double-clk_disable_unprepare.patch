@@ -1,0 +1,40 @@
+From 44a828debfa3555c0906934471d8d02be935808f Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Fri, 17 Jul 2026 16:54:36 +0000
+Subject: [PATCH] media: i2c: sc3336: fix double clk_disable_unprepare in
+ power_off
+
+__sc3336_power_off() calls clk_disable_unprepare(sc3336->xvclk) twice:
+once unconditionally at the top of the function, and again a few lines
+later after toggling pwdn_gpio. The clock core WARNs on the second call
+("mclk_ref_mipi0 already disabled" / "already unprepared") with a full
+backtrace, which is emitted on every power-off -- including when sc3336
+loses a probe race against another sensor sharing the same mipi refclk
+(see the DT change enabling rockchip,camera_default pinctrl for
+sc3336/mis5001 auto-detection) and never gets to stream.
+
+Drop the second, redundant call. The first call already unconditionally
+disables/unprepares the clock before the is_thunderboot early-return
+check, so behaviour is unchanged for both the thunderboot and normal
+power-off paths -- only the duplicate disable (and its WARNING) is
+removed.
+
+Upstream-Status: Pending
+---
+ drivers/media/i2c/sc3336.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/drivers/media/i2c/sc3336.c b/drivers/media/i2c/sc3336.c
+index aae6bcaf5a6a..b44a302f6575 100644
+--- a/drivers/media/i2c/sc3336.c
++++ b/drivers/media/i2c/sc3336.c
+@@ -1193,7 +1193,6 @@ static void __sc3336_power_off(struct sc3336 *sc3336)
+ 
+ 	if (!IS_ERR(sc3336->pwdn_gpio))
+ 		gpiod_set_value_cansleep(sc3336->pwdn_gpio, 0);
+-	clk_disable_unprepare(sc3336->xvclk);
+ 	if (!IS_ERR(sc3336->reset_gpio))
+ 		gpiod_set_value_cansleep(sc3336->reset_gpio, 0);
+ 	if (!IS_ERR_OR_NULL(sc3336->pins_sleep)) {
+-- 
+2.53.0

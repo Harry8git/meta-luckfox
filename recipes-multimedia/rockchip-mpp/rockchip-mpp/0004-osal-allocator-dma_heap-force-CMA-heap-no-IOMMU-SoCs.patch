@@ -1,0 +1,123 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Mon, 13 Jul 2026 11:40:00 +0000
+Subject: [PATCH] osal/allocator/dma_heap: force CMA heap when there is no IOMMU
+
+Encoder/decoder buffers reach the hardware through the dma-heap allocator,
+which selects the backing heap purely from the allocation flags: only
+buffers carrying MPP_BUFFER_FLAGS_CONTIG get the CMA flag and land on
+/dev/dma_heap/cma; everything else is served from the non-contiguous
+"system" / "system-uncached" heap.  The develop-branch codec buffer path
+does not set CONTIG on its internal reconstruction/reference/stream
+buffers, and on a device with no IOMMU the kernel rkvenc2 driver only
+programs the first scatter-gather segment
+(mpp_dma_import_fd: buffer->iova = sg_dma_address(sgt->sgl)).  As soon as
+such a buffer spans more than one physically-contiguous run, the codec DMA
+runs off the first page into unrelated/unmapped DRAM.
+
+On IOMMU-less SoCs (e.g. RV1106/RV1103) this manifests probabilistically
+(heap-fragmentation dependent): a short run may happen to get contiguous
+pages and succeed, while a longer run faults with
+
+  mpp_rkvenc2 ffa50000.rkvenc: found error status 00000040   (WBUS_ERR)
+  mpp_rkvenc2 ffa50000.rkvenc: resetting...
+
+and can silently corrupt whatever DRAM the stray write hits.
+
+Rather than hard-coding this per machine, detect the condition at runtime:
+if the platform exposes no controller under /sys/class/iommu the codec can
+only use contiguous memory, so force MPP_ALLOC_FLAG_CMA for every dma-heap
+allocation.  The result is cached and can be overridden with the
+"mpp_dma_heap_cma" env var (0 = never force, non-0 = always force).  On
+IOMMU-capable SoCs nothing changes and the scatter-gather "system" heap is
+still used.  The missing CMA heap variants (cma-uncached, *-dma32) are
+already remapped onto the base "cma" heap by dma_heap_init(), so a single
+/dev/dma_heap/cma is enough.
+
+Upstream-Status: Pending
+---
+ osal/allocator/allocator_dma_heap.c | 55 +++++++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+diff --git a/osal/allocator/allocator_dma_heap.c b/osal/allocator/allocator_dma_heap.c
+index 1111111..2222222 100644
+--- a/osal/allocator/allocator_dma_heap.c
++++ b/osal/allocator/allocator_dma_heap.c
+@@ -10,6 +10,7 @@
+ #include <errno.h>
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
++#include <dirent.h>
+ 
+ #include "os_mem.h"
+ #include "allocator_dma_heap.h"
+@@ -196,6 +197,56 @@ static int dma_heap_alloc(int fd, size_t len, RK_S32 *dmabuf_fd, RK_U32 flags)
+     return ret;
+ }
+ 
++/*
++ * Detect whether this platform has any IOMMU controller.  A SoC without an
++ * IOMMU (e.g. RV1106/RV1103) registers nothing under /sys/class/iommu, so the
++ * hardware codec can only address physically contiguous memory.
++ */
++static RK_U32 dma_heap_sys_has_iommu(void)
++{
++    DIR *dir = opendir("/sys/class/iommu");
++    RK_U32 has = 0;
++
++    if (dir) {
++        struct dirent *ent;
++
++        while ((ent = readdir(dir))) {
++            if (ent->d_name[0] == '.')
++                continue;
++            has = 1;
++            break;
++        }
++        closedir(dir);
++    }
++
++    return has;
++}
++
++/*
++ * Decide (once) whether every dma-heap allocation must come from the CMA
++ * (contiguous) heap.  Auto-detected from the absence of an IOMMU and
++ * overridable via the "mpp_dma_heap_cma" env var (0 = off, non-0 = force).
++ */
++static RK_U32 dma_heap_force_contig(void)
++{
++    static RK_S32 force = -1;
++
++    if (force < 0) {
++        RK_U32 env = 0xffffffff;
++
++        mpp_env_get_u32("mpp_dma_heap_cma", &env, 0xffffffff);
++        if (env != 0xffffffff)
++            force = env ? 1 : 0;
++        else
++            force = dma_heap_sys_has_iommu() ? 0 : 1;
++
++        if (force)
++            mpp_log("no iommu found, forcing contiguous (CMA) dma-heap buffers\n");
++    }
++
++    return (RK_U32)force;
++}
++
+ static MPP_RET os_allocator_dma_heap_open(void **ctx, size_t alignment, MppAllocFlagType flags)
+ {
+     allocator_ctx_dmaheap *p;
+@@ -211,6 +262,10 @@ static MPP_RET os_allocator_dma_heap_open(void **ctx, size_t alignment, MppAllocF
+ 
+     *ctx = NULL;
+ 
++    /* no-IOMMU SoCs must only ever hand contiguous buffers to hardware */
++    if (dma_heap_force_contig())
++        flags = (MppAllocFlagType)(flags | MPP_ALLOC_FLAG_CMA);
++
+     info = &heap_infos[flags];
+     if (info->fd <= 0) {
+         mpp_err_f("open dma heap type %x %s failed!\n", type, info->name);
+-- 
+2.53.0

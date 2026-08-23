@@ -1,0 +1,74 @@
+From 89d10576c0161af73e3639c3418ef2f7b3603019 Mon Sep 17 00:00:00 2001
+From: Roman Buldygin <froooks@gmail.com>
+Date: Thu, 6 Aug 2026 13:06:01 +0000
+Subject: [PATCH] v4l2: prefer contiguous formats over non-contiguous variants
+
+The ISP exposes both contiguous (NV12/NV16) and non-contiguous (NV12M/NV16M)
+variants of the same pixel format.  Upstream unconditionally prefers the
+non-contiguous variant, which produces a buffer made of several GstMemory
+objects.  Rockchip MPP and RGA need a single dmabuf per buffer to import it
+zero-copy; on no-IOMMU SoCs the hardware cannot handle the scatter-list at
+all.  When the non-contiguous variant is selected GStreamer ends up copying
+every frame through a temporary malloc buffer and falling back to CPU copies.
+
+Prefer the contiguous variant by default.  Keep the upstream behaviour
+available through the GST_V4L2_PREFER_NON_CONTIGUOUS environment variable so
+it can be restored for debugging without rebuilding.
+
+Upstream-Status: Inappropriate [platform-specific policy]
+---
+ sys/v4l2/gstv4l2object.c | 39 ++++++++++++++++++++++++++++++---------
+ 1 file changed, 30 insertions(+), 9 deletions(-)
+
+diff --git a/sys/v4l2/gstv4l2object.c b/sys/v4l2/gstv4l2object.c
+index dcd8c0c..59d5fc3 100644
+--- a/sys/v4l2/gstv4l2object.c
++++ b/sys/v4l2/gstv4l2object.c
+@@ -2156,17 +2156,38 @@ gst_v4l2_object_get_caps_info (GstV4l2Object * v4l2object, GstCaps * caps,
+     fourcc = V4L2_PIX_FMT_PWC2;
+   }
+ 
+-  /* Prefer the non-contiguous if supported */
+-  v4l2object->prefered_non_contiguous = TRUE;
++  /* Prefer a single-plane (contiguous) V4L2 format when one exists.  Each
++   * captured buffer must be exported as a single dmabuf so it can be imported
++   * into Rockchip MPP/RGA without an extra copy; on no-IOMMU SoCs the codec
++   * DMA and RGA cannot walk a scatter-list built from multi-plane formats. */
++  {
++    static gint prefer_non_contiguous = -1;
++    guint32 first, second;
++
++    if (G_UNLIKELY (prefer_non_contiguous < 0))
++      prefer_non_contiguous =
++          g_getenv ("GST_V4L2_PREFER_NON_CONTIGUOUS") ? 1 : 0;
+ 
+-  if (fourcc_nc)
+-    fmt = gst_v4l2_object_get_format_from_fourcc (v4l2object, fourcc_nc);
+-  else if (fourcc == 0)
+-    goto unhandled_format;
++    if (prefer_non_contiguous) {
++      first = fourcc_nc;
++      second = fourcc;
++    } else {
++      first = fourcc;
++      second = fourcc_nc;
++    }
+ 
+-  if (fmt == NULL) {
+-    fmt = gst_v4l2_object_get_format_from_fourcc (v4l2object, fourcc);
+-    v4l2object->prefered_non_contiguous = FALSE;
++    v4l2object->prefered_non_contiguous = prefer_non_contiguous ? TRUE : FALSE;
++
++    if (first)
++      fmt = gst_v4l2_object_get_format_from_fourcc (v4l2object, first);
++    else if (second == 0)
++      goto unhandled_format;
++
++    if (fmt == NULL) {
++      fmt = gst_v4l2_object_get_format_from_fourcc (v4l2object, second);
++      v4l2object->prefered_non_contiguous =
++          !v4l2object->prefered_non_contiguous;
++    }
+   }
+ 
+   if (fmt == NULL)
