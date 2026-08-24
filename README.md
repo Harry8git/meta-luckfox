@@ -31,8 +31,10 @@ Also for mainline yocto gstrestreamer some patches also mandatory and provided.
 ## Ready to test image
 https://github.com/buldo/meta-luckfox/releases/tag/v1.0.0  
 You have to understand that this is fixed image without possibility to install other packages.
+user: root  
+empty password  
 
-## How to test
+## How to build image
 1. Prepare workspace
 ```sh
 mkdir lfbuild
@@ -69,8 +71,10 @@ IMAGE_INSTALL:append = " \
     gstreamer1.0-rockchip-rockchipmpp \
     i2c-tools \
     v4l-utils \
-    ethtool \
-    iproute2 \
+    systemd-networkd \
+    systemd-conf \
+    systemd-resolved-enable \
+    openssh-sftp-server \
     "
 
 # Upstream default PACKAGECONFIGs for gst-plugins-base/good/bad pull in a
@@ -87,9 +91,8 @@ DISTRO_FEATURES:append = " systemd"
 VIRTUAL-RUNTIME_init_manager = "systemd"
 VIRTUAL-RUNTIME_initscripts = "systemd-compat-units"
 VIRTUAL-RUNTIME_login_manager = "shadow-base"
-
-# systemd-resolved is enabled via recipes-core/systemd/systemd_%.bbappend
-IMAGE_INSTALL:append = " systemd-networkd systemd-conf systemd-resolved-enable openssh-sftp-server"
+TCLIBC = "glibc"
+EXTRA_IMAGE_FEATURES += "allow-empty-password empty-root-password allow-root-login ssh-server-openssh"
 ``` 
 
 3. Build system
@@ -98,6 +101,14 @@ bitbake core-image-minimal        # or core-image-minimal-dev
 ```
 Get image from `build/tmp/deploy/images/luckfox-pico-pro-max/**.wic`.  
 You can write image with rpi imager, balenaEtcher, etc.
+
+## How to test gstreamer
+```
+gst-launch-1.0 -e \
+  v4l2src device=/dev/video11 num-buffers=300 ! \
+  video/x-raw,format=NV12,width=1920,height=1080,framerate=25/1 ! \
+  mpph264enc ! h264parse ! mp4mux ! filesink location=nv12.mp4
+```
 
 ## Dev notes
 
