@@ -30,7 +30,7 @@ Also for mainline yocto gstrestreamer some patches also mandatory and provided.
 
 ## Ready to test image
 https://github.com/buldo/meta-luckfox/releases/tag/v1.0.0  
-You have to understand that this is fixed image without possibility to install other packages.
+You have to understand that this is fixed image without possibility to install other packages.  
 user: root  
 empty password  
 
