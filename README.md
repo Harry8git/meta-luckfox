@@ -7,6 +7,7 @@ If you able to add more hardware and test it - PR welcome
 1. This layer created mostly by AI
 2. This layer not tested for production
 3. Developer tested only for luckfox pico pro max with MIS5001
+4. Ethernet fixed at 10M - in my setup 100M was very unstable
 
 ## What is it
 This layers provides support for Luckfox Pico Pro Max.  
