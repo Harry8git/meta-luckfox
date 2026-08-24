@@ -6,7 +6,7 @@ If you able to add more hardware and test it - PR welcome
 ## WARNING
 1. This layer created mostly by AI
 2. This layer not tested for production
-3. Developer tested only for luckfox pico pro max
+3. Developer tested only for luckfox pico pro max with MIS5001
 
 ## What is it
 This layers provides support for Luckfox Pico Pro Max.  
@@ -25,7 +25,11 @@ The aim - ability to load system, capture and encode video without outdated Luck
 ## How it even possible
 RV1106 has the same encoder IP as RK3528.
 This layer carries patches to the kernel and `rockchip-mpp` that enable using the RV1106 encoder the same way it's used on RK3528.  
-Also for mainline yocto gstrestreamer some patches also mandatory and provided
+Also for mainline yocto gstrestreamer some patches also mandatory and provided.
+
+## Ready to test image
+https://github.com/buldo/meta-luckfox/releases/tag/v1.0.0  
+You have to understand that this is fixed image without possibility to install other packages.
 
 ## How to test
 1. Prepare workspace
@@ -91,6 +95,8 @@ IMAGE_INSTALL:append = " systemd-networkd systemd-conf systemd-resolved-enable o
 ```sh
 bitbake core-image-minimal        # or core-image-minimal-dev
 ```
+Get image from `build/tmp/deploy/images/luckfox-pico-pro-max/**.wic`.  
+You can write image with rpi imager, balenaEtcher, etc.
 
 ## Dev notes
 
