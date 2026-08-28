@@ -34,17 +34,19 @@ SRC_URI = "git://github.com/rockchip-linux/kernel.git;protocol=https;branch=${KB
            file://0005-media-i2c-add-MIS5001-camera-sensor-driver.patch \
            file://0006-media-i2c-sc3336-fix-double-clk_disable_unprepare.patch \
            file://0007-rknpu-fix-arm32-cache-flush-and-format-specifier.patch \
+           file://0008-rga2-fix-get-user-pages-remote.patch \
            file://enable-efi-partition.cfg \
            file://enable-camera-subsystem.cfg \
            file://enable-stmmac-ethtool.cfg \
            file://enable-usb-gadget.cfg \
+           file://custom-features.cfg \
            "
 
 # Rockchip vendor kernel 6.6 was developed against GCC 10-11.  GCC 14+ promotes
 # -Wimplicit-function-declaration to an error by default, which breaks several
 # vendor drivers (e.g. fiq_debugger).  Suppress it globally for this tree until
 # each affected driver is patched individually.
-EXTRA_OEMAKE:append = " KCFLAGS="-Wno-implicit-function-declaration -Wno-error -Wno-format""
+EXTRA_OEMAKE:append = " KCFLAGS='-Wno-implicit-function-declaration -Wno-error -Wno-format'"
 
 RK_KERNEL_DTS_BASE ?= ""
 

@@ -1,0 +1,14 @@
+Upstream-Status: Pending
+diff --git a/drivers/video/rockchip/rga2/rga2_mmu_info.c b/drivers/video/rockchip/rga2/rga2_mmu_info.c
+index a01ba08e6ff8..82208b8b4f7c 100644
+--- a/drivers/video/rockchip/rga2/rga2_mmu_info.c
++++ b/drivers/video/rockchip/rga2/rga2_mmu_info.c
+@@ -938,7 +938,7 @@ static int rga2_MapUserMemory(struct page **pages, uint32_t *pageTable,
+ 				       pageCount, writeFlag, pages, NULL, NULL);
+ #else
+ 	result = get_user_pages_remote(current->mm, Memory << PAGE_SHIFT,
+-				       pageCount, writeFlag, pages, NULL, NULL);
++				       pageCount, writeFlag, pages, NULL);
+ #endif
+ 
+ 	if (result > 0 && result >= pageCount) {

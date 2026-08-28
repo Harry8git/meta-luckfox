@@ -17,5 +17,10 @@ echo "CDC-NCM + ACM" > configs/c.1/strings/0x409/configuration
 ln -sf functions/ncm.usb0 configs/c.1/
 ln -sf functions/acm.GS0 configs/c.1/
 echo ffb00000.usb > UDC 2>/dev/null || true
-sleep 1
-ifconfig usb0 172.32.0.93 netmask 255.255.0.0 up 2>/dev/null || true
+for i in 1 2 3 4 5 6 7 8 9 10; do
+    ip link show usb0 >/dev/null 2>&1 && break
+    sleep 0.1
+done
+
+ip link set usb0 up
+ip addr add 169.254.100.1/16 dev usb0

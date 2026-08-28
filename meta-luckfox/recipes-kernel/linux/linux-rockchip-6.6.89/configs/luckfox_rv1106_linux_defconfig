@@ -353,7 +353,7 @@ CONFIG_BACKLIGHT_PWM=m
 # rga_init()) would simply never appear and librga fails with
 # "failed to open RGA:No such file or directory". Built-in runs the same init
 # via late_initcall() unconditionally.
-CONFIG_ROCKCHIP_MULTI_RGA=y
+# CONFIG_ROCKCHIP_MULTI_RGA is not set
 CONFIG_ROCKCHIP_RGA_PROC_FS=y
 # CONFIG_ROCKCHIP_RGA_DEBUG_FS is not set
 CONFIG_ROCKCHIP_RVE=m

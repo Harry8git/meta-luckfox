@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Harry Spencer <hspencer@rv1106g3>
+Date: Thu, 27 Aug 2026 19:30:00 -0700
+Subject: [PATCH] rga2: fix get_user_pages_remote for Linux 6.6
+
+Linux 6.6 changed get_user_pages_remote() to take six arguments.
+The Rockchip RGA2 driver still passes the obsolete seventh argument.
+
+Upstream-Status: Pending
+Signed-off-by: Harry Spencer <hspencer@rv1106g3>
+
+---
+ drivers/video/rockchip/rga2/rga2_mmu_info.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/video/rockchip/rga2/rga2_mmu_info.c b/drivers/video/rockchip/rga2/rga2_mmu_info.c
+--- a/drivers/video/rockchip/rga2/rga2_mmu_info.c
++++ b/drivers/video/rockchip/rga2/rga2_mmu_info.c
+@@ -938,7 +938,7 @@ static int rga2_MapUserMemory(struct rga2_mem_info_t *mem_info)
+ #else
+ 	result = get_user_pages_remote(current->mm, Memory << PAGE_SHIFT,
+-				       pageCount, writeFlag, pages, NULL, NULL);
++				       pageCount, writeFlag, pages, NULL);
+ #endif
