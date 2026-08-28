@@ -1,0 +1,26 @@
+From: LuckFox Yocto BSP <noreply@luckfox.com>
+Subject: [PATCH] rv1106-u-boot: enable eMMC as primary boot target
+Upstream-Status: Inappropriate [Luckfox board specific]
+
+--- a/arch/arm/dts/rv1106-u-boot.dtsi
++++ b/arch/arm/dts/rv1106-u-boot.dtsi
+@@ -12,7 +12,7 @@
+ 
+ 	chosen {
+ 		stdout-path = &uart2;
+-		u-boot,spl-boot-order = &sdmmc, &spi_nor, &spi_nand, &emmc;
++		u-boot,spl-boot-order = &emmc, &sdmmc;
+ 	};
+ 
+ 	secure-otp@ff3fd8000 {
+@@ -34,6 +34,8 @@
+ &emmc {
+ 	mmc-ecsd = <0x3F000>;
+ 	bus-width = <8>;
++	supports-emmc;
++	non-removable;
+ 	mmc-hs200-1_8v;
+ 	u-boot,dm-spl;
++	u-boot,dm-pre-reloc;
+ 	status = "okay";
+ };

@@ -1,0 +1,65 @@
+From: Yocto Developer <developer@yocto.org>
+Date: Wed, 26 Aug 2026 00:00:00 +0000
+Subject: [PATCH] drivers/rknpu: fix 32-bit ARM build on Linux 6.6
+Upstream-Status: Inappropriate [Rockchip vendor tree specific]
+
+dcache_*_poc functions only exist on ARM64. On ARM32, use dmac_flush_range.
+
+--- a/drivers/rknpu/rknpu_gem.c
++++ b/drivers/rknpu/rknpu_gem.c
+@@ -1580,9 +1580,13 @@ static int rknpu_cache_sync_with_sg(stru
+ 			__dma_map_area(cache_start, cache_length,
+ 				       DMA_TO_DEVICE);
+ #else
++#ifdef CONFIG_ARM64
+ 			dcache_clean_poc((unsigned long)cache_start,
+ 					 (unsigned long)cache_start +
+ 						 cache_length);
++#else
++			dmac_flush_range((const void *)cache_start, (const void *)((char *)cache_start + cache_length));
++#endif
+ #endif
+ 		}
+ 
+@@ -1591,9 +1595,13 @@ static int rknpu_cache_sync_with_sg(stru
+ 			__dma_unmap_area(cache_start, cache_length,
+ 					 DMA_FROM_DEVICE);
+ #else
++#ifdef CONFIG_ARM64
+ 			dcache_inval_poc((unsigned long)cache_start,
+ 					 (unsigned long)cache_start +
+ 						 cache_length);
++#else
++			dmac_flush_range((const void *)cache_start, (const void *)((char *)cache_start + cache_length));
++#endif
+ #endif
+ 		}
+ 
+@@ -1653,9 +1661,13 @@ static int rknpu_cache_sync(struct rknpu
+ 			__dma_map_area(cache_start, cache_length,
+ 				       DMA_TO_DEVICE);
+ #else
++#ifdef CONFIG_ARM64
+ 			dcache_clean_poc((unsigned long)cache_start,
+ 					 (unsigned long)cache_start +
+ 						 cache_length);
++#else
++			dmac_flush_range((const void *)cache_start, (const void *)((char *)cache_start + cache_length));
++#endif
+ #endif
+ 		}
+ 
+@@ -1664,9 +1676,13 @@ static int rknpu_cache_sync(struct rknpu
+ 			__dma_unmap_area(cache_start, cache_length,
+ 					 DMA_FROM_DEVICE);
+ #else
++#ifdef CONFIG_ARM64
+ 			dcache_inval_poc((unsigned long)cache_start,
+ 					 (unsigned long)cache_start +
+ 						 cache_length);
++#else
++			dmac_flush_range((const void *)cache_start, (const void *)((char *)cache_start + cache_length));
++#endif
+ #endif
+ 		}
+ 

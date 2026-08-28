@@ -1,45 +1,31 @@
 // SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 /*
  * Copyright (c) 2022 Rockchip Electronics Co., Ltd.
- */
-/*
- * Unlike the 5.10 Luckfox SDK kernel, rv1106-evb.dtsi in the rockchip-linux
- * develop-6.6 tree already includes rv1106-amp.dtsi, so it is not included
- * here again.
+ * Customized for Luckfox Pico Zero with Sony IMX462 Camera
  */
 
+#include "rv1106-evb.dtsi"
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/display/media-bus-format.h>
+
 / {
-	/*
-	 * Contiguous memory pool for the open-source MPP codec stack.
-	 *
-	 * rv1106 has no IOMMU, so the hardware video encoder (VEPU 540C) can only
-	 * address physically contiguous buffers.  The Rockchip MPP userspace
-	 * allocates these from the generic DMA-BUF CMA heap, which is exported as
-	 * /dev/dma_heap/cma and backed by the CMA region named "cma" below
-	 * (linux,cma-default).  The ISP, RGA and DRM display pipelines share the
-	 * same pool, so size it for the whole media use-case, not just encoding.
-	 *
-	 * 64 MiB comfortably fits a single 1080p H.264/H.265 stream with its
-	 * reference/reconstruction frames and buffer queues.  Tune the size to
-	 * match the deployed pipeline and the 256 MiB total DRAM budget.
-	 */
-	reserved-memory {
+chosen {
+		bootargs = "earlycon=uart8250,mmio32,0xff4c0000 console=ttyFIQ0 root=PARTLABEL=rootfs rootwait snd_soc_core.prealloc_buffer_size_kbytes=16 coherent_pool=0";
+	};
+
+	reserved_memory: reserved-memory {
+		status = "okay";
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
-
-		cma {
-			compatible = "shared-dma-pool";
-			reusable;
-			size = <0x04000000>;
-			alignment = <0x400000>;
-			linux,cma-default;
+		mmc_ecsd: mmc@3f000 {
+			reg = <0x3f000 0x00001000>;
 		};
 	};
 
 	acodec_sound: acodec-sound {
 		compatible = "simple-audio-card";
-		simple-audio-card,name = "rv-acodec";
+		simple-audio-card,name = "rv1106-acodec";
 		simple-audio-card,format = "i2s";
 		simple-audio-card,mclk-fs = <256>;
 		simple-audio-card,cpu {
@@ -47,6 +33,22 @@
 		};
 		simple-audio-card,codec {
 			sound-dai = <&acodec>;
+		};
+	};
+
+	dsm_sound: dsm-sound {
+		status = "disabled";
+		compatible = "simple-audio-card";
+		simple-audio-card,format = "i2s";
+		simple-audio-card,mclk-fs = <256>;
+		simple-audio-card,name = "rockchip,dsm-sound";
+		simple-audio-card,bitclock-master = <&sndcodec>;
+		simple-audio-card,frame-master = <&sndcodec>;
+		sndcpu: simple-audio-card,cpu {
+			sound-dai = <&i2s0_8ch>;
+		};
+		sndcodec: simple-audio-card,codec {
+			sound-dai = <&dsm>;
 		};
 	};
 
@@ -68,52 +70,41 @@
 		regulator-max-microvolt = <3300000>;
 	};
 
+/* Fixed 900mV rail for Luckfox Pico Zero */
 	vdd_arm: vdd-arm {
 		compatible = "regulator-fixed";
 		regulator-name = "vdd_arm";
-		/*
-		 * On kernel 6.6 drivers/regulator/fixed.c rejects a regulator-fixed
-		 * node whose min/max differ ("Fixed regulator specified with
-		 * variable voltages", -EINVAL); regulator-init-microvolt is also
-		 * ignored (apply_uV is forced to 0). The old min800000/max1000000/
-		 * init900000 triplet (copied verbatim from the 5.10 SDK, which
-		 * tolerated it) therefore failed to register on 6.6, leaving
-		 * cpu-supply permanently unresolved (regulator_get_optional()
-		 * returns -EPROBE_DEFER forever -> "cpu0 reg is not ready" ->
-		 * rockchip-cpufreq never inits). Every OPP in rv1106.dtsi's
-		 * cpu0_opp_table requests the voltage window [850000, 1000000]
-		 * (PVTPLL compensates the actual voltage), so a single fixed value
-		 * inside that window makes regulator_set_voltage() a no-op success
-		 * for every OPP. Keep this value within [850000, 1000000] -- e.g.
-		 * 800000 (the old min) is OUTSIDE the window and breaks cpufreq.
-		 */
 		regulator-min-microvolt = <900000>;
 		regulator-max-microvolt = <900000>;
 		regulator-always-on;
 		regulator-boot-on;
 	};
+
 	leds: leds {
 		compatible = "gpio-leds";
 		work_led: work{
 			gpios = <&gpio3 RK_PC6 GPIO_ACTIVE_HIGH>;
 			linux,default-trigger = "activity";
 			default-state = "on";
-		};	
-	};
-
-	// DHT11
-	dht11_sensor {
-		compatible = "dht11";
-		pinctrl-names = "default";
-		pinctrl-0 = <&gpio1_pc7>;
-
-		dht11@1 {
-			gpios = <&gpio1 RK_PC7 GPIO_ACTIVE_HIGH>;
-			label = "dht11";
-			linux,default-trigger = "humidity";
 		};
 	};
 
+	/* Master Clock Generator for Sony IMX462 (37.125 MHz) */
+	out_osc_imx462: out-osc-imx462 {
+		compatible = "fixed-clock";
+		clock-output-names = "out-osc-imx462";
+		clock-frequency = <37125000>;
+		#clock-cells = <0>;
+	};
+
+	/* Hardware IR-Cut Filter Controller */
+	cam_ircut0: cam_ircut {
+		status = "okay";
+		compatible = "rockchip,ircut";
+		rockchip,camera-module-index = <0>;
+		rockchip,camera-module-facing = "back";
+		gpios = <&gpio3 RK_PC4 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 /***************************** AUDIO ********************************/
@@ -124,76 +115,42 @@
 
 &acodec {
 	#sound-dai-cells = <0>;
-	pa-ctl-gpios = <&gpio1 RK_PA1 GPIO_ACTIVE_HIGH>;
 	status = "okay";
 };
-/***************************** CPU ********************************/
+
+/************************* FIQ_DEBUGGER ****************************/
+&fiq_debugger {
+	rockchip,irq-mode-enable = <1>;
+	status = "okay";
+};
+
+/***************************** USB *********************************/
+&u2phy {
+	status = "okay";
+};
+
+&u2phy_otg {
+	status = "okay";
+};
+
+&usbdrd {
+	status = "okay";
+};
+
+&usbdrd_dwc3 {
+	status = "okay";
+};
+
+/***************************** DSM *********************************/
+&dsm {
+	status = "disabled";
+};
+
 &cpu0 {
 	cpu-supply = <&vdd_arm>;
 };
 
-/*
- * rv1106.dtsi's cpu0_opp_table declares a DIFFERENT target voltage per OPP
- * (850000..1000000uV, inherited unmodified from a design that assumes a real
- * DVS-capable regulator like the EVB's pwm-regulator). vdd_arm here is a
- * genuinely fixed 900000uV rail with no voltage control, so cpufreq-dt's
- * generic per-OPP regulator scaling (triggered purely by the presence of the
- * "cpu-supply" property above, independently of any Rockchip-specific OPP
- * data -- rv1106 isn't even in rockchip_cpufreq_of_match) tries to request
- * each OPP's declared voltage via regulator_set_voltage_triplet(). Since
- * vdd_arm's constraint window is the single point 900000uV (required by
- * drivers/regulator/fixed.c on 6.6, see the vdd_arm node above), any request
- * whose window does not straddle 900000uV is rejected outright, flooding
- * dmesg with:
- *   cpu cpu0: _set_opp_voltage: failed to set voltage (... mV): -22
- *   cpu cpu0: Failed to set regulator voltages: -22
- *   cpufreq: __target_index: Failed to change cpu frequency: -22
- * Delete opp-microvolt from every OPP so dev_pm_opp parses a zero target
- * voltage for each -- drivers/opp/core.c's _set_opp_voltage() then skips
- * calling regulator_set_voltage_triplet() entirely (if (target_uV) guard),
- * so cpufreq scales frequency only and never touches the regulator at all.
- */
-&cpu0_opp_table {
-	opp-408000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-600000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-816000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-1104000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-1200000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-1296000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-1416000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-1512000000 {
-		/delete-property/ opp-microvolt;
-	};
-	opp-1608000000 {
-		/delete-property/ opp-microvolt;
-	};
-};
-
-/***************************** ADC ********************************/
-&saradc {
-	status = "okay";
-	vref-supply = <&vcc_1v8>;
-};
-
-&tsadc {
-	status = "okay";
-};
-
-/***************************** CSI ********************************/
+/*************************** MIPI CSI *********************************/
 &csi2_dphy_hw {
 	status = "okay";
 };
@@ -210,15 +167,10 @@
 			#address-cells = <1>;
 			#size-cells = <0>;
 
+			// MIPI CSI D-PHY Endpoint linked to IMX462 (4 data lanes)
 			csi_dphy_input0: endpoint@0 {
 				reg = <0>;
-				remote-endpoint = <&sc3336_out>;
-				data-lanes = <1 2>;
-			};
-
-			csi_dphy_input1: endpoint@1 {
-				reg = <1>;
-				remote-endpoint = <&mis5001_out>;
+				remote-endpoint = <&imx290_out>;
 				data-lanes = <1 2>;
 			};
 		};
@@ -238,61 +190,31 @@
 
 &i2c4 {
 	status = "okay";
-	clock-frequency = <400000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c4m2_xfer>;
 
-	/*
-	 * Only one of sc3336/mis5001 is physically populated at a time; both
-	 * share the mipi_refclk_out0 pad and the RK_PC5 gpio line. Using
-	 * pinctrl-names = "default" here makes the device core permanently
-	 * claim the shared pad for whichever sensor probes first via
-	 * pinctrl_bind_pins() (drivers/base/dd.c), so the second sensor's
-	 * probe aborts with "pin gpio3-20 already requested" regardless of
-	 * which sensor is actually connected. Both sc3336.c and mis5001.c
-	 * instead look up a pinctrl state named "rockchip,camera_default"
-	 * (see OF_CAMERA_PINCTRL_STATE_DEFAULT) and select it themselves,
-	 * transiently, from their own power-on/power-off paths. Naming the
-	 * state that way here means the device core no longer auto-claims
-	 * the pad, so both sensors probe cleanly and the one that is
-	 * actually present is detected.
-	 */
-	sc3336: sc3336@30 {
-		compatible = "smartsens,sc3336";
+	imx290: imx290@1a {
 		status = "okay";
-		reg = <0x30>;
-		clocks = <&cru MCLK_REF_MIPI0>;
-		clock-names = "xvclk";
-		pwdn-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
-		pinctrl-names = "rockchip,camera_default";
-		pinctrl-0 = <&mipi_refclk_out0>;
+		compatible = "sony,imx462";           /* MATCHES DRIVER MODEL */
+		reg = <0x1a>;
+		clocks = <&out_osc_imx462>;
+		clock-names = "xclk";
+		clock-frequency = <37125000>;
+		reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&cam_io_1>;
+
 		rockchip,camera-module-index = <0>;
 		rockchip,camera-module-facing = "back";
-		rockchip,camera-module-name = "CMK-OT2119-PC1";
-		rockchip,camera-module-lens-name = "30IRC-F16";
+		rockchip,camera-module-name = "imx462"; /* MATCHES RKAIQ IQ FILE */
+		rockchip,camera-module-lens-name = "default";
+		lens-focus = <&cam_ircut0>;
+
 		port {
-			sc3336_out: endpoint {
+			imx290_out: endpoint {
 				remote-endpoint = <&csi_dphy_input0>;
 				data-lanes = <1 2>;
-			};
-		};
-	};
-
-	mis5001: mis5001@31 {
-		compatible = "imagedesign,mis5001";
-		status = "okay";
-		reg = <0x31>;
-		clocks = <&cru MCLK_REF_MIPI0>;
-		clock-names = "xvclk";
-		reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
-		pinctrl-names = "rockchip,camera_default";
-		pinctrl-0 = <&mipi_refclk_out0>;
-		rockchip,camera-module-index = <0>;
-		rockchip,camera-module-facing = "back";
-		rockchip,camera-module-name = "CMK-OT2115-PC1";
-		rockchip,camera-module-lens-name = "30IRC-F16";
-		port {
-			mis5001_out: endpoint {
-				remote-endpoint = <&csi_dphy_input1>;
-				data-lanes = <1 2>;
+				link-frequencies = /bits/ 64 <445500000>; /* 2-LANE 1080P60 LINK FREQ */
 			};
 		};
 	};
@@ -339,7 +261,6 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&mipi_pins>;
 	port {
-		/* MIPI CSI-2 endpoint */
 		cif_mipi_in: endpoint {
 			remote-endpoint = <&mipi_csi2_output>;
 		};
@@ -350,7 +271,6 @@
 	status = "okay";
 
 	port {
-		/* MIPI CSI-2 endpoint */
 		mipi_lvds_sditf: endpoint {
 			remote-endpoint = <&isp_in>;
 		};
@@ -371,53 +291,43 @@
 	};
 };
 
+/***************************** ADC ********************************/
+&saradc {
+	status = "okay";
+	vref-supply = <&vcc_1v8>;
+};
 
-/*****************************PINCTRL********************************/
+&tsadc {
+	status = "okay";
+};
+
+/**************************** PINCTRL ******************************/
 // SPI
 &spi0 {
 	pinctrl-0 = <&spi0m0_clk &spi0m0_miso &spi0m0_mosi &spi0m0_cs0>;
 	#address-cells = <1>;
 	#size-cells = <0>;
 	spidev@0 {
-	compatible = "rockchip,spidev";
+		compatible = "rockchip,spidev";
 		spi-max-frequency = <50000000>;
 		reg = <0>;
 	};
-
-	fbtft@0 {
-		compatible = "sitronix,st7789v";
-		reg = <0>;
-		spi-max-frequency = <20000000>;
-		fps = <30>;
-		buswidth = <8>;
-		debug = <0x7>;
-		led-gpios = <&gpio2 RK_PB0 GPIO_ACTIVE_HIGH>;//BL
-		dc-gpios = <&gpio2 RK_PB1 GPIO_ACTIVE_HIGH>;//DC
-		reset-gpios = <&gpio1 RK_PC3 GPIO_ACTIVE_LOW>;//RES
-	};
 };
+
 // I2C
-&i2c0 {
-	pinctrl-0 = <&i2c0m2_xfer>;
-};
-
 &i2c1 {
 	pinctrl-0 = <&i2c1m1_xfer>;
 };
-
-&i2c3 {
-	pinctrl-0 = <&i2c3m1_xfer &i2c3m0_xfer>;
+&i2c2 {
+	pinctrl-0 = <&i2c2m0_xfer>;
 };
-
-&i2c4 {
-	pinctrl-names = "default", "conifg";
-	pinctrl-0 = <&i2c4m2_xfer>;
-	pinctrl-1 = <&i2c4m0_xfer>;
+&i2c3 {
+	pinctrl-0 = <&i2c3m2_xfer>;
 };
 
 // UART
 &uart0 {
-	pinctrl-0 = <&uart0m0_xfer &uart0m1_xfer>;
+	pinctrl-0 = <&uart0m0_xfer>;
 };
 &uart1 {
 	pinctrl-0 = <&uart1m1_xfer>;
@@ -429,27 +339,33 @@
 	pinctrl-0 = <&uart4m1_xfer>;
 };
 &uart5 {
-	pinctrl-0 = <&uart5m0_xfer>;
+	pinctrl-0 = <&uart5m1_xfer>;
 };
 
 // PWM
 &pwm0 {
 	pinctrl-0 = <&pwm0m1_pins>;
 };
+&pwm1 {
+	pinctrl-0 = <&pwm1m0_pins>;
+};
 &pwm2 {
-	pinctrl-0 = <&pwm2m2_pins>;
+	pinctrl-0 = <&pwm2m0_pins>;
 };
 &pwm3 {
-	pinctrl-0 = <&pwm3m2_pins>;
+	pinctrl-0 = <&pwm3m1_pins>;
 };
 &pwm4 {
-	pinctrl-0 = <&pwm4m2_pins>;
+	pinctrl-0 = <&pwm4m0_pins>;
 };
 &pwm5 {
-	pinctrl-0 = <&pwm5m1_pins &pwm5m2_pins>;
+	pinctrl-0 = <&pwm5m1_pins>;
 };
 &pwm6 {
-	pinctrl-0 = <&pwm6m1_pins &pwm6m2_pins>;
+	pinctrl-0 = <&pwm6m1_pins>;
+};
+&pwm7 {
+	pinctrl-0 = <&pwm7m1_pins>;
 };
 &pwm8 {
 	pinctrl-0 = <&pwm8m1_pins>;
@@ -458,13 +374,23 @@
 	pinctrl-0 = <&pwm9m1_pins>;
 };
 &pwm10 {
-	pinctrl-0 = <&pwm10m1_pins &pwm10m2_pins>;
+	pinctrl-0 = <&pwm10m1_pins>;
 };
 &pwm11 {
-	pinctrl-0 = <&pwm11m1_pins &pwm11m2_pins>;
+	pinctrl-0 = <&pwm11m2_pins>;
 };
 
 &pinctrl {
+	cam {
+		cam_io_0: cam-io-0 {
+			rockchip,pins = <3 RK_PC4 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+
+		cam_io_1: cam-io-1 {
+			rockchip,pins = <3 RK_PC5 RK_FUNC_GPIO &pcfg_pull_up>;
+		};
+	};
+
 	spi0 {
 		spi0m0_clk: spi0m0-clk {
 			rockchip,pins = <1 RK_PC1 4 &pcfg_pull_none>;
@@ -478,31 +404,24 @@
 		spi0m0_cs0: spi0m0-cs0 {
 			rockchip,pins = <1 RK_PC0 4 &pcfg_pull_none>;
 		};
-	};
-
-	gpio1-pc7 {
-		gpio1_pc7: gpio1-pc7 {
-			rockchip,pins = <1 RK_PC7 RK_FUNC_GPIO &pcfg_pull_none>;
+		spi0m0_cs1: spi0m0-cs1 {
+			rockchip,pins = <1 RK_PD2 5 &pcfg_pull_none>; /* GPIO1_D2 (RK_PD2), function 5 */
 		};
 	};
 };
 
-/***************************** VENC ********************************/
-/*
- * Hardware H.264/H.265 video encoder (VEPU 540C).
- *
- * mpp_srv is the MPP service core that arbitrates the codec task queues;
- * rkvenc is the encoder core itself, bound by the open-source rkvenc2 driver
- * (compatible "rockchip,rkv-encoder-rv1106", added to the driver match table).
- * Both nodes are defined as "disabled" in rv1106.dtsi and enabled here.
- */
-&mpp_srv {
-	status = "okay";
+
+
+/* Stripping opp-microvolt prevents cpufreq voltage-set failures on fixed 900mV rails */
+&cpu0_opp_table {
+	opp-408000000  { /delete-property/ opp-microvolt; };
+	opp-600000000  { /delete-property/ opp-microvolt; };
+	opp-816000000  { /delete-property/ opp-microvolt; };
+	opp-1104000000 { /delete-property/ opp-microvolt; };
+	opp-1200000000 { /delete-property/ opp-microvolt; };
+	opp-1296000000 { /delete-property/ opp-microvolt; };
+	opp-1416000000 { /delete-property/ opp-microvolt; };
+	opp-1512000000 { /delete-property/ opp-microvolt; };
+	opp-1608000000 { /delete-property/ opp-microvolt; };
 };
-
-&rkvenc {
-	status = "okay";
-};
-
-
 

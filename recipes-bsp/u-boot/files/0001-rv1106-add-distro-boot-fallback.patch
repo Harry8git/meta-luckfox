@@ -1,0 +1,34 @@
+From: LuckFox Yocto BSP <noreply@luckfox.com>
+Subject: [PATCH] rv1106: add sysboot fallback for extlinux.conf boot
+Upstream-Status: Inappropriate [Luckfox distro boot specific]
+
+--- a/include/configs/rv1106_common.h
++++ b/include/configs/rv1106_common.h
+@@ -95,13 +95,15 @@
+ #undef RKIMG_BOOTCOMMAND
+ #ifdef CONFIG_FIT_SIGNATURE
+ #define RKIMG_BOOTCOMMAND		\
+-	"boot_fit;"
++	"boot_fit;"			\
++	"sysboot mmc 0:1 any ${pxefile_addr_r} /extlinux/extlinux.conf;"
+ #else
+ #define RKIMG_BOOTCOMMAND		\
+ 	"boot_fit;"			\
+-	"boot_android ${devtype} ${devnum};"
++	"boot_android ${devtype} ${devnum};"	\
++	"sysboot mmc 0:1 any ${pxefile_addr_r} /extlinux/extlinux.conf;"
+ #endif
+
+ /* Update define for tiny image */
+ #ifdef CONFIG_ROCKCHIP_IMAGE_TINY
+ #undef RKIMG_BOOTCOMMAND
+@@ -113,7 +115,8 @@
+ #undef CONFIG_GZIP
+ /* TODO: #define CONFIG_LIB_HW_RAND */
+
+-#define RKIMG_BOOTCOMMAND		"boot_fit;"
++#define RKIMG_BOOTCOMMAND		\
++	"boot_fit;sysboot mmc 0:1 any ${pxefile_addr_r} /extlinux/extlinux.conf;"
+ #define CONFIG_EXTRA_ENV_SETTINGS	ENV_MEM_LAYOUT_SETTINGS
+ #endif
+ #endif	/* !CONFIG_SPL_BUILD */

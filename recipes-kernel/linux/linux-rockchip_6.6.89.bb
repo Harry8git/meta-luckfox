@@ -6,7 +6,7 @@ LIC_FILES_CHKSUM = "file://COPYING;md5=6bc538ed5bd9a7fc9398086aedcd7e46"
 inherit kernel kernel-yocto
 
 # Same common build-time dependencies as linux-yocto.inc
-DEPENDS += "xz-native bc-native openssl-native util-linux-native gmp-native libmpc-native"
+DEPENDS += "lz4-native xz-native bc-native openssl-native util-linux-native gmp-native libmpc-native"
 # mkimage is required by scripts/mkimg when assembling the Rockchip boot.img FIT image.
 DEPENDS += "u-boot-tools-native"
 
@@ -33,16 +33,18 @@ SRC_URI = "git://github.com/rockchip-linux/kernel.git;protocol=https;branch=${KB
            file://0004-mpp-iommu-reject-non-contiguous-buffers-on-no-iommu.patch \
            file://0005-media-i2c-add-MIS5001-camera-sensor-driver.patch \
            file://0006-media-i2c-sc3336-fix-double-clk_disable_unprepare.patch \
+           file://0007-rknpu-fix-arm32-cache-flush-and-format-specifier.patch \
            file://enable-efi-partition.cfg \
            file://enable-camera-subsystem.cfg \
            file://enable-stmmac-ethtool.cfg \
+           file://enable-usb-gadget.cfg \
            "
 
 # Rockchip vendor kernel 6.6 was developed against GCC 10-11.  GCC 14+ promotes
 # -Wimplicit-function-declaration to an error by default, which breaks several
 # vendor drivers (e.g. fiq_debugger).  Suppress it globally for this tree until
 # each affected driver is patched individually.
-EXTRA_OEMAKE:append = " KCFLAGS=-Wno-implicit-function-declaration"
+EXTRA_OEMAKE:append = " KCFLAGS="-Wno-implicit-function-declaration -Wno-error -Wno-format""
 
 RK_KERNEL_DTS_BASE ?= ""
 
