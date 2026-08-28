@@ -5,7 +5,7 @@
 
 /dts-v1/;
 #include "rv1106.dtsi"
-#include "rv1106-luckfox-pico-pro-max-ipc.dtsi"
+#include "rv1106-luckfox-pico-zero-ipc.dtsi"
 #include <dt-bindings/input/input.h>
 #include <dt-bindings/display/media-bus-format.h>
 
