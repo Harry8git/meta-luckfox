@@ -27,6 +27,7 @@ SRC_URI = "git://github.com/buldo/rkaiq-mirrors.git;protocol=https;branch=JeffyC
            file://0001-cmake-drop-Werror-and-hardcoded-march-mthumb-let-OE-.patch \
            file://0002-ipc_server-add-missing-stdio.h-include-in-MessagePar.patch \
            file://0003-rkisp_demo-install-with-empty-RPATH-and-relocatable-.patch \
+           file://imx462_imx462_default.json \
            "
 
 inherit pkgconfig cmake
@@ -190,6 +191,7 @@ do_install:append () {
 	fi
 
 	install -m 0644 *.json ${D}${sysconfdir}/iqfiles/
+	install -m 0644 ${UNPACKDIR}/imx462_imx462_default.json ${D}${sysconfdir}/iqfiles/
 
 	if [ "${VIRTUAL-RUNTIME_init_manager}" != "systemd" ]; then
 		install -d ${D}${sysconfdir}/init.d

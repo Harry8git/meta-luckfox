@@ -1,0 +1,25 @@
+# Large Yocto output/caches
+/build/sstate-cache/
+/build/tmp/deploy/
+/build/tmp/cache/
+/build/downloads/
+
+# Yocto task/build internals
+/build/tmp/work/*/*/*/*/temp/
+/build/tmp/work/*/*/*/*/image/
+/build/tmp/work/*/*/*/*/packages-split/
+/build/tmp/work/*/*/*/*/recipe-sysroot/
+/build/tmp/work/*/*/*/*/recipe-sysroot-native/
+/build/tmp/work/*/*/*/*/sysroot-destdir/
+/build/tmp/work/*/*/*/*/pseudo/
+
+# Compiled artifacts
+/build/tmp/work/**/*.o
+/build/tmp/work/**/*.a
+/build/tmp/work/**/*.so
+/build/tmp/work/**/*.so.*
+/build/tmp/work/**/*.la
+/build/tmp/work/**/*.cmd
+
+# Kernel/build generated output
+/build/tmp/work-shared/

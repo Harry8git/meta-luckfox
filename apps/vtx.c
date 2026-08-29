@@ -1,11 +1,12 @@
 /*
- * Dedicated Low-Latency H.265 720p60 USB CDC Streamer (VTX)
- * Pipeline: Sony IMX462 (1080p60) -> Direct VI (720p Scaler) -> VENC (H.265 CBR+GIR) -> USB CDC (/dev/ttyGS0)
+ * Dedicated Low-Latency H.265 V4L2 -> MPP Encoder -> USB CDC Streamer (VTX)
+ * Open-Source Rockchip MPP + V4L2 DMA-BUF Zero-Copy Pipeline
  */
 
-#include <assert.h>
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <getopt.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -14,313 +15,449 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <linux/videodev2.h>
 
-#include "rk_debug.h"
-#include "rk_defines.h"
-#include "rk_mpi_mb.h"
-#include "rk_mpi_sys.h"
-#include "rk_mpi_venc.h"
-#include "rk_mpi_vi.h"
-#include "sample_comm.h"
+#include <rockchip/rk_mpi.h>
+#include <rockchip/rk_mpi_cmd.h>
+#include <rockchip/rk_venc_cmd.h>
+#include <rockchip/rk_venc_rc.h>
+#include <rockchip/rk_venc_cfg.h>
+#include <rockchip/mpp_buffer.h>
+#include <rockchip/mpp_frame.h>
+#include <rockchip/mpp_packet.h>
+#include <rockchip/rk_mpp_cfg.h>
 
-#define VTX_WIDTH          1280
-#define VTX_HEIGHT         720
-#define VTX_FPS            60
-#define VTX_BITRATE_KBPS   2400        /* 2.4 Mbps CBR */
-#define VTX_CDC_DEV        "/dev/ttyGS0"
-#define VTX_IQ_DIR         "/etc/iqfiles"
-#define MAX_PACK_COUNT     8
+#define MAX_V4L2_BUFFERS   4
+#define MPP_ALIGN(x, a)    (((x) + (a) - 1) & ~((a) - 1))
+
+typedef struct {
+    char        v4l2_dev[64];
+    char        cdc_dev[64];
+    uint32_t    width;
+    uint32_t    height;
+    uint32_t    fps;
+    uint32_t    bitrate_kbps;
+    uint32_t    gir_rows;
+} VtxConfig;
+
+typedef struct {
+    void       *start;
+    size_t      length;
+    int         dma_fd;
+    MppBuffer   mpp_buf;
+} CamBuffer;
+
+typedef struct {
+    VtxConfig   cfg;
+    int         v4l2_fd;
+    CamBuffer   buffers[MAX_V4L2_BUFFERS];
+    uint32_t    buf_count;
+
+    MppCtx      mpp_ctx;
+    MppApi     *mpi;
+    MppEncCfg   enc_cfg;
+
+    int         cdc_fd;
+    pthread_t   tx_thd;
+} VtxContext;
 
 static volatile bool quit = false;
 
 static void sigterm_handler(int sig) {
-	fprintf(stderr, "\nSignal %d received, stopping VTX...\n", sig);
-	quit = true;
+    (void)sig;
+    quit = true;
 }
 
-/* Configure serial port to 100% raw binary mode (No 0x0A -> 0x0D 0x0A corruption) */
 static int set_serial_raw(int fd) {
-	struct termios tty;
-	if (tcgetattr(fd, &tty) != 0) {
-		perror("tcgetattr");
-		return -1;
-	}
-
-	cfmakeraw(&tty);
-
-	/* Explicitly disable all text processing, newlines, and XON/XOFF flow control */
-	tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF);
-	tty.c_oflag &= ~(OPOST | ONLCR | OCRNL | ONOCR | ONLRET);
-	tty.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-	tty.c_cflag |= (CS8 | CLOCAL | CREAD);
-	tty.c_cflag &= ~(PARENB | CSTOPB | CRTSCTS);
-
-	tcflush(fd, TCIOFLUSH);
-	if (tcsetattr(fd, TCSANOW, &tty) != 0) {
-		perror("tcsetattr");
-		return -1;
-	}
-	return 0;
+    struct termios tty;
+    if (tcgetattr(fd, &tty) != 0) {
+        perror("tcgetattr");
+        return -1;
+    }
+    cfmakeraw(&tty);
+    tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF);
+    tty.c_oflag &= ~(OPOST | ONLCR | OCRNL | ONOCR | ONLRET);
+    tty.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
+    tty.c_cflag |= (CS8 | CLOCAL | CREAD);
+    tty.c_cflag &= ~(PARENB | CSTOPB | CRTSCTS);
+    tcflush(fd, TCIOFLUSH);
+    return tcsetattr(fd, TCSANOW, &tty);
 }
 
-/* Fast write with backpressure handling */
 static inline int cdc_write_all(int fd, const uint8_t *buf, size_t len) {
-	size_t total_written = 0;
-	struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+    size_t total_written = 0;
+    struct pollfd pfd = { .fd = fd, .events = POLLOUT };
 
-	while (total_written < len && !quit) {
-		int ret = poll(&pfd, 1, 20);
-		if (ret < 0) {
-			if (errno == EINTR) continue;
-			return -1;
-		}
-		if (ret == 0) continue;
+    while (total_written < len && !quit) {
+        int ret = poll(&pfd, 1, 20);
+        if (ret < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (ret == 0) continue;
 
-		ssize_t n = write(fd, buf + total_written, len - total_written);
-		if (n < 0) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
-			return -1;
-		}
-		total_written += (size_t)n;
-	}
-	return (int)total_written;
+        ssize_t n = write(fd, buf + total_written, len - total_written);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
+            return -1;
+        }
+        total_written += (size_t)n;
+    }
+    return (int)total_written;
 }
 
-/* ----------------------------------------------------------------------------
- * Video Transmission Thread
- * ---------------------------------------------------------------------------- */
-static void *venc_cdc_stream_thread(void *arg) {
-	(void)arg;
-	prctl(PR_SET_NAME, "vtx_cdc_tx", 0, 0, 0);
-
-	VENC_STREAM_S stFrame;
-	memset(&stFrame, 0, sizeof(VENC_STREAM_S));
-	stFrame.pstPack = malloc(sizeof(VENC_PACK_S) * MAX_PACK_COUNT);
-	if (!stFrame.pstPack) {
-		RK_LOGE("Failed to allocate VENC_PACK_S");
-		quit = true;
-		return NULL;
-	}
-
-	int cdc_fd = open(VTX_CDC_DEV, O_WRONLY | O_NONBLOCK | O_NOCTTY);
-	if (cdc_fd < 0) {
-		fprintf(stderr, "ERROR: Could not open %s (%s). Check if USB Serial gadget is active.\n",
-		        VTX_CDC_DEV, strerror(errno));
-		quit = true;
-		free(stFrame.pstPack);
-		return NULL;
-	}
-
-	/* Put /dev/ttyGS0 into raw binary mode */
-	if (set_serial_raw(cdc_fd) < 0) {
-		RK_LOGW("Failed to set raw mode on %s", VTX_CDC_DEV);
-	}
-
-	printf(">>> VTX ACTIVE: Streaming RAW Binary H.265 to %s <<<\n", VTX_CDC_DEV);
-
-	while (!quit) {
-		stFrame.u32PackCount = MAX_PACK_COUNT;
-
-		RK_S32 s32Ret = RK_MPI_VENC_GetStream(0, &stFrame, 40);
-		if (s32Ret == RK_SUCCESS) {
-			for (RK_U32 i = 0; i < stFrame.u32PackCount; i++) {
-				void *pData = RK_MPI_MB_Handle2VirAddr(stFrame.pstPack[i].pMbBlk);
-				uint32_t len = stFrame.pstPack[i].u32Len;
-
-				if (pData && len > 0) {
-					cdc_write_all(cdc_fd, (const uint8_t *)pData, len);
-				}
-			}
-			RK_MPI_VENC_ReleaseStream(0, &stFrame);
-		} else {
-			usleep(1000);
-		}
-	}
-
-	close(cdc_fd);
-	free(stFrame.pstPack);
-	return NULL;
+static int xioctl(int fh, int request, void *arg) {
+    int r;
+    do {
+        r = ioctl(fh, request, arg);
+    } while (r == -1 && errno == EINTR);
+    return r;
 }
 
-/* ----------------------------------------------------------------------------
- * VI / VENC Hardware Setup
- * ---------------------------------------------------------------------------- */
-static int vi_init(int channelId, int width, int height) {
-	SAMPLE_VI_CTX_S vi_ctx;
-	memset(&vi_ctx, 0, sizeof(vi_ctx));
+static int v4l2_init(VtxContext *ctx) {
+    ctx->v4l2_fd = open(ctx->cfg.v4l2_dev, O_RDWR | O_NONBLOCK, 0);
+    if (ctx->v4l2_fd < 0) {
+        fprintf(stderr, "ERROR: Cannot open V4L2 device '%s': %s\n", ctx->cfg.v4l2_dev, strerror(errno));
+        return -1;
+    }
 
-	vi_ctx.u32Width = width;
-	vi_ctx.u32Height = height;
-	vi_ctx.s32DevId = 0;
-	vi_ctx.u32PipeId = 0;
-	vi_ctx.s32ChnId = channelId;
-	vi_ctx.stChnAttr.stIspOpt.u32BufCount = 2;
-	vi_ctx.stChnAttr.stIspOpt.enMemoryType = VI_V4L2_MEMORY_TYPE_DMABUF;
-	vi_ctx.stChnAttr.u32Depth = 0;
-	vi_ctx.stChnAttr.enPixelFormat = RK_FMT_YUV420SP;
-	vi_ctx.stChnAttr.enCompressMode = COMPRESS_MODE_NONE;
-	vi_ctx.stChnAttr.stFrameRate.s32SrcFrameRate = -1;
-	vi_ctx.stChnAttr.stFrameRate.s32DstFrameRate = -1;
+    struct v4l2_format fmt;
+    memset(&fmt, 0, sizeof(fmt));
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.width = ctx->cfg.width;
+    fmt.fmt.pix.height = ctx->cfg.height;
+    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
+    fmt.fmt.pix.field = V4L2_FIELD_NONE;
 
-	return SAMPLE_COMM_VI_CreateChn(&vi_ctx);
+    if (xioctl(ctx->v4l2_fd, VIDIOC_S_FMT, &fmt) < 0) {
+        /* Fallback for Multi-Planar devices */
+        struct v4l2_format fmt_mp;
+        memset(&fmt_mp, 0, sizeof(fmt_mp));
+        fmt_mp.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        fmt_mp.fmt.pix_mp.width = ctx->cfg.width;
+        fmt_mp.fmt.pix_mp.height = ctx->cfg.height;
+        fmt_mp.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
+        fmt_mp.fmt.pix_mp.field = V4L2_FIELD_NONE;
+        fmt_mp.fmt.pix_mp.num_planes = 1;
+        if (xioctl(ctx->v4l2_fd, VIDIOC_S_FMT, &fmt_mp) < 0) {
+            fprintf(stderr, "ERROR: VIDIOC_S_FMT failed on %s: %s\n", ctx->cfg.v4l2_dev, strerror(errno));
+            return -1;
+        }
+    }
+
+    struct v4l2_requestbuffers req;
+    memset(&req, 0, sizeof(req));
+    req.count = MAX_V4L2_BUFFERS;
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
+
+    if (xioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req) < 0 || req.count == 0) {
+        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        if (xioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req) < 0) {
+            fprintf(stderr, "ERROR: VIDIOC_REQBUFS failed: %s\n", strerror(errno));
+            return -1;
+        }
+    }
+    ctx->buf_count = req.count;
+
+    for (uint32_t i = 0; i < ctx->buf_count; ++i) {
+        struct v4l2_buffer buf;
+        struct v4l2_plane planes[1];
+        memset(&buf, 0, sizeof(buf));
+        buf.type = req.type;
+        buf.memory = V4L2_MEMORY_MMAP;
+        buf.index = i;
+        if (req.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+            buf.m.planes = planes;
+            buf.length = 1;
+        }
+
+        if (xioctl(ctx->v4l2_fd, VIDIOC_QUERYBUF, &buf) < 0) {
+            fprintf(stderr, "ERROR: VIDIOC_QUERYBUF failed: %s\n", strerror(errno));
+            return -1;
+        }
+
+        size_t buf_len = (req.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? planes[0].length : buf.length;
+        off_t buf_off = (req.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? planes[0].m.mem_offset : buf.m.offset;
+
+        ctx->buffers[i].length = buf_len;
+        ctx->buffers[i].start = mmap(NULL, buf_len, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->v4l2_fd, buf_off);
+        if (ctx->buffers[i].start == MAP_FAILED) {
+            perror("mmap");
+            return -1;
+        }
+
+        /* Export DMA-BUF for zero-copy HW encoder import */
+        struct v4l2_exportbuffer expbuf;
+        memset(&expbuf, 0, sizeof(expbuf));
+        expbuf.type = req.type;
+        expbuf.index = i;
+        expbuf.flags = O_CLOEXEC | O_RDWR;
+        if (xioctl(ctx->v4l2_fd, VIDIOC_EXPBUF, &expbuf) < 0) {
+            perror("VIDIOC_EXPBUF");
+            return -1;
+        }
+        ctx->buffers[i].dma_fd = expbuf.fd;
+
+        MppBufferInfo info;
+        memset(&info, 0, sizeof(info));
+        info.type = MPP_BUFFER_TYPE_EXT_DMA;
+        info.fd = expbuf.fd;
+        info.size = buf_len;
+        info.ptr = ctx->buffers[i].start;
+
+        MPP_RET ret = mpp_buffer_import(&ctx->buffers[i].mpp_buf, &info);
+        if (ret != MPP_OK) {
+            fprintf(stderr, "ERROR: mpp_buffer_import failed: %d\n", ret);
+            return -1;
+        }
+
+        if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) {
+            perror("VIDIOC_QBUF");
+            return -1;
+        }
+    }
+
+    enum v4l2_buf_type type = req.type;
+    if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
+        perror("VIDIOC_STREAMON");
+        return -1;
+    }
+
+    return 0;
 }
 
-static int venc_init(int chnId, int width, int height) {
-	VENC_CHN_ATTR_S stAttr;
-	memset(&stAttr, 0, sizeof(VENC_CHN_ATTR_S));
+static int mpp_enc_setup(VtxContext *ctx) {
+    MPP_RET ret = mpp_create(&ctx->mpp_ctx, &ctx->mpi);
+    if (ret != MPP_OK) {
+        fprintf(stderr, "ERROR: mpp_create failed: %d\n", ret);
+        return -1;
+    }
 
-	/* Clean H.265 CBR Rate Control */
-	stAttr.stRcAttr.enRcMode = VENC_RC_MODE_H265CBR;
-	stAttr.stRcAttr.stH265Cbr.u32BitRate = VTX_BITRATE_KBPS;
-	stAttr.stRcAttr.stH265Cbr.u32Gop = VTX_FPS * 5; /* 5s GOP with GIR */
-	stAttr.stRcAttr.stH265Cbr.u32SrcFrameRateNum = VTX_FPS;
-	stAttr.stRcAttr.stH265Cbr.u32SrcFrameRateDen = 1;
-	stAttr.stRcAttr.stH265Cbr.fr32DstFrameRateNum = VTX_FPS;
-	stAttr.stRcAttr.stH265Cbr.fr32DstFrameRateDen = 1;
+    ret = mpp_init(ctx->mpp_ctx, MPP_CTX_ENC, MPP_VIDEO_CodingHEVC);
+    if (ret != MPP_OK) {
+        fprintf(stderr, "ERROR: mpp_init failed: %d\n", ret);
+        return -1;
+    }
 
-	stAttr.stVencAttr.enType = RK_VIDEO_ID_HEVC;
-	stAttr.stVencAttr.enPixelFormat = RK_FMT_YUV420SP;
-	stAttr.stVencAttr.u32Profile = 0; /* Main Profile */
-	stAttr.stVencAttr.u32PicWidth = width;
-	stAttr.stVencAttr.u32PicHeight = height;
-	stAttr.stVencAttr.u32VirWidth = width;
-	stAttr.stVencAttr.u32VirHeight = height;
-	stAttr.stVencAttr.u32StreamBufCnt = 2;
-	stAttr.stVencAttr.u32BufSize = width * height * 3 / 2;
-	stAttr.stVencAttr.enMirror = MIRROR_NONE;
+    ret = mpp_enc_cfg_init(&ctx->enc_cfg);
+    if (ret != MPP_OK) {
+        fprintf(stderr, "ERROR: mpp_enc_cfg_init failed\n");
+        return -1;
+    }
 
-	stAttr.stGopAttr.enGopMode = VENC_GOPMODE_NORMALP;
+    uint32_t width = ctx->cfg.width;
+    uint32_t height = ctx->cfg.height;
+    uint32_t hor_stride = MPP_ALIGN(width, 16);
+    uint32_t ver_stride = MPP_ALIGN(height, 16);
 
-	RK_MPI_VENC_CreateChn(chnId, &stAttr);
+    /* Resolution and Stride */
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:width", width);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:height", height);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:hor_stride", hor_stride);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:ver_stride", ver_stride);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:format", MPP_FMT_YUV420SP);
 
-	/* Flat Transform */
-	VENC_H265_TRANS_S pstH265Trans;
-	RK_MPI_VENC_GetH265Trans(chnId, &pstH265Trans);
-	pstH265Trans.bScalingListEnabled = 0;
-	RK_MPI_VENC_SetH265Trans(chnId, &pstH265Trans);
+    /* Clean H.265 CBR Rate Control */
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:bps_target", ctx->cfg.bitrate_kbps * 1000);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:bps_max", ctx->cfg.bitrate_kbps * 1000);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:bps_min", ctx->cfg.bitrate_kbps * 1000 * 8 / 10);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_in_flex", 0);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_in_num", ctx->cfg.fps);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_in_denorm", 1);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_flex", 0);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_num", ctx->cfg.fps);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_denorm", 1);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.fps * 5);
 
-	/* Gradual Intra Refresh (GIR) */
-	VENC_INTRA_REFRESH_S stIntraRefresh;
-	memset(&stIntraRefresh, 0, sizeof(VENC_INTRA_REFRESH_S));
-	stIntraRefresh.bRefreshEnable     = RK_TRUE;
-	stIntraRefresh.enIntraRefreshMode = INTRA_REFRESH_ROW;
-	stIntraRefresh.u32RefreshNum      = 2; /* 2 CTU rows/frame */
-	stIntraRefresh.u32ReqIQp          = 25;
-	RK_MPI_VENC_SetIntraRefresh(chnId, &stIntraRefresh);
+    /* H.265 Profile */
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "codec:type", MPP_VIDEO_CodingHEVC);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:profile", 1); /* Main Profile */
 
-	/* Standard Rate Control limits (No non-standard delta QP jumps) */
-	VENC_RC_PARAM_S stRcParam;
-	memset(&stRcParam, 0, sizeof(VENC_RC_PARAM_S));
-	stRcParam.s32FirstFrameStartQp = 26;
-	stRcParam.stParamH265.u32StepQp = 4;
-	stRcParam.stParamH265.u32MinQp = 18;
-	stRcParam.stParamH265.u32MaxQp = 42;
-	stRcParam.stParamH265.u32MinIQp = 18;
-	stRcParam.stParamH265.u32MaxIQp = 38;
-	RK_MPI_VENC_SetRcParam(chnId, &stRcParam);
+    /* Gradual Intra Refresh (GIR) */
+    if (ctx->cfg.gir_rows > 0) {
+        mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:refresh_en", 1);
+        mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:refresh_mode", MPP_ENC_RC_INTRA_REFRESH_ROW);
+        mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:refresh_num", ctx->cfg.gir_rows);
+    }
 
-	VENC_RECV_PIC_PARAM_S stRecvParam;
-	memset(&stRecvParam, 0, sizeof(VENC_RECV_PIC_PARAM_S));
-	stRecvParam.s32RecvPicNum = -1;
-	RK_MPI_VENC_StartRecvFrame(chnId, &stRecvParam);
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
+    if (ret != MPP_OK) {
+        fprintf(stderr, "ERROR: MPP_ENC_SET_CFG failed: %d\n", ret);
+        return -1;
+    }
 
-	return 0;
+    RK_S32 timeout = 100;
+    ctx->mpi->control(ctx->mpp_ctx, MPP_SET_INPUT_TIMEOUT, &timeout);
+    ctx->mpi->control(ctx->mpp_ctx, MPP_SET_OUTPUT_TIMEOUT, &timeout);
+
+    return 0;
 }
 
-/* ----------------------------------------------------------------------------
- * Main Function
- * ---------------------------------------------------------------------------- */
-int main(int argc, char *argv[]) {
-	(void)argc;
-	(void)argv;
+static void *stream_tx_loop(void *arg) {
+    VtxContext *ctx = (VtxContext *)arg;
+    prctl(PR_SET_NAME, "vtx_tx", 0, 0, 0);
 
-	signal(SIGINT, sigterm_handler);
-	signal(SIGTERM, sigterm_handler);
+    ctx->cdc_fd = open(ctx->cfg.cdc_dev, O_WRONLY | O_NONBLOCK | O_NOCTTY);
+    if (ctx->cdc_fd < 0) {
+        fprintf(stderr, "ERROR: Cannot open CDC device '%s': %s\n", ctx->cfg.cdc_dev, strerror(errno));
+        quit = true;
+        return NULL;
+    }
+    set_serial_raw(ctx->cdc_fd);
 
-	printf("\n=======================================================\n");
-	printf(" Luckfox Pico - Low-Latency Direct USB CDC H.265 VTX\n");
-	printf(" Ingest       : Sony IMX462 (ISP 720p60 Scaling)\n");
-	printf(" Video Codec  : H.265 CBR (%u Kbps) + GIR Active\n", VTX_BITRATE_KBPS);
-	printf(" Output Node  : %s (USB Serial)\n", VTX_CDC_DEV);
-	printf("=======================================================\n\n");
+    printf(">>> VTX ACTIVE: Streaming Zero-Copy H.265 to %s <<<\n", ctx->cfg.cdc_dev);
 
-	SAMPLE_COMM_ISP_Init(0, RK_AIQ_WORKING_MODE_NORMAL, RK_FALSE, VTX_IQ_DIR);
-	SAMPLE_COMM_ISP_Run(0);
+    while (!quit) {
+        struct pollfd pfd = { .fd = ctx->v4l2_fd, .events = POLLIN };
+        int poll_ret = poll(&pfd, 1, 40);
+        if (poll_ret <= 0) continue;
 
-	if (RK_MPI_SYS_Init() != RK_SUCCESS) {
-		RK_LOGE("RK_MPI_SYS_Init failed");
-		return -1;
-	}
+        struct v4l2_buffer buf;
+        struct v4l2_plane planes[1];
+        memset(&buf, 0, sizeof(buf));
+        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        buf.memory = V4L2_MEMORY_MMAP;
 
-	vi_init(0, VTX_WIDTH, VTX_HEIGHT);
-	venc_init(0, VTX_WIDTH, VTX_HEIGHT);
+        if (xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            buf.m.planes = planes;
+            buf.length = 1;
+            if (xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+                continue;
+            }
+        }
 
-	MPP_CHN_S stSrcChn  = { .enModId = RK_ID_VI,   .s32DevId = 0, .s32ChnId = 0 };
-	MPP_CHN_S stDestChn = { .enModId = RK_ID_VENC, .s32DevId = 0, .s32ChnId = 0 };
-	RK_MPI_SYS_Bind(&stSrcChn, &stDestChn);
+        uint32_t idx = buf.index;
+        MppFrame frame = NULL;
+        MppPacket packet = NULL;
 
-	pthread_t cdc_thread;
-	pthread_create(&cdc_thread, NULL, venc_cdc_stream_thread, NULL);
+        mpp_frame_init(&frame);
+        mpp_frame_set_width(frame, ctx->cfg.width);
+        mpp_frame_set_height(frame, ctx->cfg.height);
+        mpp_frame_set_hor_stride(frame, MPP_ALIGN(ctx->cfg.width, 16));
+        mpp_frame_set_ver_stride(frame, MPP_ALIGN(ctx->cfg.height, 16));
+        mpp_frame_set_fmt(frame, MPP_FMT_YUV420SP);
+        mpp_frame_set_buffer(frame, ctx->buffers[idx].mpp_buf);
 
-	while (!quit) {
-		sleep(1);
-	}
+        /* Encode Frame */
+        MPP_RET ret = ctx->mpi->encode_put_frame(ctx->mpp_ctx, frame);
+        if (ret == MPP_OK) {
+            ret = ctx->mpi->encode_get_packet(ctx->mpp_ctx, &packet);
+            if (ret == MPP_OK && packet) {
+                void *ptr = mpp_packet_get_pos(packet);
+                size_t len = mpp_packet_get_length(packet);
+                if (ptr && len > 0) {
+                    cdc_write_all(ctx->cdc_fd, (const uint8_t *)ptr, len);
+                }
+                mpp_packet_deinit(&packet);
+            }
+        }
 
-	pthread_join(cdc_thread, NULL);
+        if (frame) mpp_frame_deinit(&frame);
 
-	/* Clean Teardown */
-	RK_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
-	SAMPLE_VI_CTX_S vi_ctx = { .s32DevId = 0, .s32ChnId = 0 };
-	SAMPLE_COMM_VI_DestroyChn(&vi_ctx);
+        /* Return buffer to V4L2 capture queue */
+        xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
+    }
 
-	RK_MPI_VENC_StopRecvFrame(0);
-	RK_MPI_VENC_DestroyChn(0);
-	RK_MPI_VI_DisableDev(0);
-	RK_MPI_SYS_Exit();
-
-	SAMPLE_COMM_ISP_Stop(0);
-
-	printf("VTX cleanly terminated.\n");
-	return 0;
+    close(ctx->cdc_fd);
+    return NULL;
 }
 
+int main(int argc, char **argv) {
+    VtxContext ctx;
+    memset(&ctx, 0, sizeof(ctx));
 
-/*
+    /* Default Configuration */
+    strncpy(ctx.cfg.v4l2_dev, "/dev/video11", sizeof(ctx.cfg.v4l2_dev) - 1);
+    strncpy(ctx.cfg.cdc_dev, "/dev/ttyGS0", sizeof(ctx.cfg.cdc_dev) - 1);
+    ctx.cfg.width = 1280;
+    ctx.cfg.height = 720;
+    ctx.cfg.fps = 60;
+    ctx.cfg.bitrate_kbps = 2400;
+    ctx.cfg.gir_rows = 2;
 
-cat /dev/cu.usbmodem103 | mpv - \
-  --demuxer-lavf-format=hevc \
-  --demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer \
-  --no-correct-pts \
-  --container-fps-override=60 \
-  --profile=low-latency \
-  --no-cache \
-  --untimed \
-  --hwdec=no \
-  --video-sync=display-desync \
-  --opengl-glfinish=yes \
-  --framedrop=vo
+    static struct option long_opts[] = {
+        {"device",  required_argument, 0, 'd'},
+        {"output",  required_argument, 0, 'o'},
+        {"width",   required_argument, 0, 'w'},
+        {"height",  required_argument, 0, 'h'},
+        {"fps",     required_argument, 0, 'f'},
+        {"bitrate", required_argument, 0, 'b'},
+        {"gir",     required_argument, 0, 'g'},
+        {"help",    no_argument,       0, '?'},
+        {0, 0, 0, 0}
+    };
 
+    int opt;
+    while ((opt = getopt_long(argc, argv, "d:o:w:h:f:b:g:?", long_opts, NULL)) != -1) {
+        switch (opt) {
+            case 'd': strncpy(ctx.cfg.v4l2_dev, optarg, sizeof(ctx.cfg.v4l2_dev) - 1); break;
+            case 'o': strncpy(ctx.cfg.cdc_dev, optarg, sizeof(ctx.cfg.cdc_dev) - 1); break;
+            case 'w': ctx.cfg.width = (uint32_t)atoi(optarg); break;
+            case 'h': ctx.cfg.height = (uint32_t)atoi(optarg); break;
+            case 'f': ctx.cfg.fps = (uint32_t)atoi(optarg); break;
+            case 'b': ctx.cfg.bitrate_kbps = (uint32_t)atoi(optarg); break;
+            case 'g': ctx.cfg.gir_rows = (uint32_t)atoi(optarg); break;
+            default:
+                printf("Usage: %s [-d /dev/video11] [-o /dev/ttyGS0] [-w 1280] [-h 720] [-f 60] [-b 2400] [-g 2]\n", argv[0]);
+                return 0;
+        }
+    }
 
-cat /dev/cu.usbmodem103 | mpv - \
-  --demuxer-lavf-format=hevc \
-  --demuxer-lavf-o=probesize=32768,analyzeduration=0 \
-  --no-correct-pts \
-  --container-fps-override=60 \
-  --profile=low-latency \
-  --no-cache \
-  --untimed \
-  --framedrop=vo
+    signal(SIGINT, sigterm_handler);
+    signal(SIGTERM, sigterm_handler);
 
-# Find your device (e.g., /dev/cu.usbmodem1101)
-DEVICE=$(ls /dev/cu.usbmodem* | head -n 1)
+    printf("\n=======================================================\n");
+    printf(" Luckfox Pico - Open MPP Zero-Copy H.265 VTX\n");
+    printf(" Ingest       : %s (%ux%u @ %ufps)\n", ctx.cfg.v4l2_dev, ctx.cfg.width, ctx.cfg.height, ctx.cfg.fps);
+    printf(" Video Codec  : H.265 CBR (%u Kbps) + GIR (%u rows)\n", ctx.cfg.bitrate_kbps, ctx.cfg.gir_rows);
+    printf(" Output Node  : %s\n", ctx.cfg.cdc_dev);
+    printf("=======================================================\n\n");
 
-# Configure true raw binary mode
-stty -f $DEVICE raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+    if (v4l2_init(&ctx) < 0) {
+        fprintf(stderr, "Failed to initialize V4L2 ingest\n");
+        return -1;
+    }
 
-cat $DEVICE | ffplay -fflags nobuffer -flags low_delay -f hevc -framerate 60 -i -
+    if (mpp_enc_setup(&ctx) < 0) {
+        fprintf(stderr, "Failed to setup MPP encoder\n");
+        return -1;
+    }
 
-*/
+    pthread_create(&ctx.tx_thd, NULL, stream_tx_loop, &ctx);
+
+    while (!quit) {
+        sleep(1);
+    }
+
+    pthread_join(ctx.tx_thd, NULL);
+
+    /* Teardown */
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    xioctl(ctx.v4l2_fd, VIDIOC_STREAMOFF, &type);
+
+    for (uint32_t i = 0; i < ctx.buf_count; ++i) {
+        if (ctx.buffers[i].mpp_buf) mpp_buffer_put(ctx.buffers[i].mpp_buf);
+        if (ctx.buffers[i].dma_fd >= 0) close(ctx.buffers[i].dma_fd);
+        if (ctx.buffers[i].start && ctx.buffers[i].start != MAP_FAILED) {
+            munmap(ctx.buffers[i].start, ctx.buffers[i].length);
+        }
+    }
+    close(ctx.v4l2_fd);
+
+    if (ctx.enc_cfg) mpp_enc_cfg_deinit(ctx.enc_cfg);
+    if (ctx.mpp_ctx) mpp_destroy(ctx.mpp_ctx);
+
+    printf("VTX cleanly stopped.\n");
+    return 0;
+}
