@@ -1,0 +1,96 @@
+cd ~/yocto-luckfox
+source poky/oe-init-build-env build
+
+bitbake -c cleansstate u-boot-rockchip
+bitbake core-image-minimal
+
+# 1. Check if the Mac detects the board
+rkdeveloptool ld
+
+# 2. Go to your build deploy folder
+cd ~/OrbStack/RV1106-dev/home/hspencer/yocto-luckfox/build/tmp/deploy/images/luckfox-pico-pro-max/
+
+
+
+ls /dev/tty.usbmodem*
+screen /dev/tty.usbmodem* 115200
+
+cd ~/yocto-luckfox/build
+bitbake -c cleansstate linux-rockchip
+bitbake core-image-minimal
+
+
+
+
+
+
+
+
+Partitions defined in:
+luckfox-pico-pro-max-sd.wks.in
+
+
+
+
+sudo locale-gen en_US.UTF-8
+sudo update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+export LANG=en_US.UTF-8
+
+mkdir -p ~/yocto-workspace
+cd ~/yocto-workspace
+grep "LAYERSERIES_COMPAT" meta-luckfox/conf/layer.conf
+
+grep "LAYERDEPENDS" meta-luckfox/conf/layer.conf
+
+ls meta-luckfox/conf/machine/
+
+
+
+
+
+bitbake virtual/kernel -c cleansstate
+
+bitbake core-image-minimal
+
+
+
+cd /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-pro-max/
+
+
+
+We need to configure U-Boot :
+# CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION is not set
+CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR=y
+CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x440
+
+sed -i '/CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=/i \        printf "# CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION is not set\\nCONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR=y\\n" >> .config' meta-luckfox/recipes-bsp/u-boot/u-boot-rockchip_git.bb 2>/dev/null || sed -i '/CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=/i \        printf "# CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION is not set\\nCONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR=y\\n" >> .config' $(find meta-luckfox -name "u-boot-rockchip*.bb*")
+
+
+
+
+
+
+
+ls /dev/tty.* | grep -iE "usb|modem"
+
+ssh root@169.254.100.1
+
+
+
+bitbake core-image-minimal
+
+
+
+ip addr del 172.32.0.93/16 dev usb0
+ip addr add 169.254.100.1/16 dev usb0
+
+source ~/rv1106-yocto/openembedded-core/oe-init-build-env build
+
+NEW_YOCTO="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-zero"
+
+rkdeveloptool db "$NEW_YOCTO/download.bin" && \
+rkdeveloptool wl 0 "$NEW_YOCTO/core-image-minimal-luckfox-pico-zero.rootfs.wic" && \
+rkdeveloptool rd
+
+
+scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/apps/vtx root@169.254.100.1:/usr/bin/vtx

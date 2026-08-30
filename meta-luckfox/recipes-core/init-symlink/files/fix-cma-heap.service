@@ -1,0 +1,10 @@
+[Unit]
+Description=Create cma-uncached symlink for Rockchip CMA heap
+After=basic.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/fix-cma-heap.sh
+
+[Install]
+WantedBy=multi-user.target

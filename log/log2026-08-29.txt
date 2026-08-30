@@ -1,0 +1,15 @@
+01:08:14 	Error: failed to stat config.ini, err=2
+01:08:15 	Error: failed to stat config.ini, err=2
+01:08:15 	is_sparse_image failed, err=2, can't open file: /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-zero/core-image-minimal-luckfox-pico-pro-max.rootfs.wic
+
+01:08:15 	is_ubifs_image failed, err=2, can't open file: /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-zero/core-image-minimal-luckfox-pico-pro-max.rootfs.wic
+
+01:38:53 	Error: failed to stat config.ini, err=2
+01:40:30 	Error:RKU_DeviceRequest-->DeviceRequest vendor=0x471 failed, err=-1
+01:40:31 	<LAYER 0-1> ERROR:DownloadBoot-->Boot_VendorRequest471 failed,index(0)
+01:40:50 	Error: failed to stat config.ini, err=2
+01:40:51 	Error: failed to stat config.ini, err=2
+01:45:02 	Error: failed to stat config.ini, err=2
+13:24:37 	Error: failed to stat config.ini, err=2
+13:24:38 	Error: failed to stat config.ini, err=2
+13:28:49 	Error: failed to stat config.ini, err=2

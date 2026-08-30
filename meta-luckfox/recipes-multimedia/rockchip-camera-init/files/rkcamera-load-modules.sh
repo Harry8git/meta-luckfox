@@ -55,7 +55,7 @@ set -e
 # Try every sensor driver this kernel build supports; whichever one is not
 # physically present on the I2C/CSI bus just fails its own probe internally
 # and the module stays loaded with zero bound devices (cleaned up below).
-for sensor in mis5001 sc3336 imx415; do
+for sensor in mis5001 sc3336 imx415 imx327; do
 	modprobe "$sensor" || true
 done
 
@@ -71,7 +71,7 @@ modprobe phy-rockchip-csi2-dphy
 
 # Drop sensor modules that never bound to any device (3rd lsmod column, the
 # refcount, is 0) -- same cleanup the vendor script does.
-for sensor in mis5001 sc3336 imx415; do
+for sensor in mis5001 sc3336 imx415 imx327; do
 	if lsmod | grep -w "$sensor" | awk '{print $3}' | grep -qw 0; then
 		rmmod "$sensor" || true
 	fi
@@ -86,3 +86,9 @@ done
 	echo 1 > /sys/module/video_rkisp/parameters/clr_unready_dev
 
 exit 0
+
+# Ensure MPP CMA dma-heap symlinks exist for contiguous zero-copy allocation
+if [ -e /dev/dma_heap/reserved ]; then
+	ln -sf reserved /dev/dma_heap/cma
+	ln -sf reserved /dev/dma_heap/cma-uncached
+fi

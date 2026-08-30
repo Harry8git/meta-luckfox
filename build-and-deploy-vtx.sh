@@ -32,7 +32,7 @@ echo "==> Built successfully: ./apps/vtx"
 ls -lh ./apps/vtx
 
 if [ "$1" = "--deploy" ] || [ "$1" = "-d" ]; then
-    TARGET_IP="${2:-192.168.1.100}"
+    TARGET_IP="${2:-169.254.100.1}"
     echo "==> Deploying to root@${TARGET_IP}:/usr/bin/vtx ..."
     scp ./apps/vtx root@${TARGET_IP}:/usr/bin/vtx
     echo "==> Deployed successfully to target."

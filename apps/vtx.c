@@ -49,15 +49,15 @@ typedef struct {
 } VtxConfig;
 
 typedef struct {
-    void       *start;
-    size_t      length;
     int         dma_fd;
+    size_t      length;
     MppBuffer   mpp_buf;
 } CamBuffer;
 
 typedef struct {
     VtxConfig   cfg;
     int         v4l2_fd;
+    uint32_t    buf_type;
     CamBuffer   buffers[MAX_V4L2_BUFFERS];
     uint32_t    buf_count;
 
@@ -129,42 +129,49 @@ static int v4l2_init(VtxContext *ctx) {
         return -1;
     }
 
+    struct v4l2_capability cap;
+    if (xioctl(ctx->v4l2_fd, VIDIOC_QUERYCAP, &cap) < 0) {
+        perror("VIDIOC_QUERYCAP");
+        return -1;
+    }
+
+    if (cap.capabilities & V4L2_CAP_VIDEO_CAPTURE_MPLANE) {
+        ctx->buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    } else {
+        ctx->buf_type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    }
+
     struct v4l2_format fmt;
     memset(&fmt, 0, sizeof(fmt));
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width = ctx->cfg.width;
-    fmt.fmt.pix.height = ctx->cfg.height;
-    fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
-    fmt.fmt.pix.field = V4L2_FIELD_NONE;
+    fmt.type = ctx->buf_type;
+
+    if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+        fmt.fmt.pix_mp.width = ctx->cfg.width;
+        fmt.fmt.pix_mp.height = ctx->cfg.height;
+        fmt.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
+        fmt.fmt.pix_mp.field = V4L2_FIELD_NONE;
+        fmt.fmt.pix_mp.num_planes = 1;
+    } else {
+        fmt.fmt.pix.width = ctx->cfg.width;
+        fmt.fmt.pix.height = ctx->cfg.height;
+        fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_NV12;
+        fmt.fmt.pix.field = V4L2_FIELD_NONE;
+    }
 
     if (xioctl(ctx->v4l2_fd, VIDIOC_S_FMT, &fmt) < 0) {
-        /* Fallback for Multi-Planar devices */
-        struct v4l2_format fmt_mp;
-        memset(&fmt_mp, 0, sizeof(fmt_mp));
-        fmt_mp.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        fmt_mp.fmt.pix_mp.width = ctx->cfg.width;
-        fmt_mp.fmt.pix_mp.height = ctx->cfg.height;
-        fmt_mp.fmt.pix_mp.pixelformat = V4L2_PIX_FMT_NV12;
-        fmt_mp.fmt.pix_mp.field = V4L2_FIELD_NONE;
-        fmt_mp.fmt.pix_mp.num_planes = 1;
-        if (xioctl(ctx->v4l2_fd, VIDIOC_S_FMT, &fmt_mp) < 0) {
-            fprintf(stderr, "ERROR: VIDIOC_S_FMT failed on %s: %s\n", ctx->cfg.v4l2_dev, strerror(errno));
-            return -1;
-        }
+        fprintf(stderr, "ERROR: VIDIOC_S_FMT failed on %s: %s\n", ctx->cfg.v4l2_dev, strerror(errno));
+        return -1;
     }
 
     struct v4l2_requestbuffers req;
     memset(&req, 0, sizeof(req));
     req.count = MAX_V4L2_BUFFERS;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.type = ctx->buf_type;
     req.memory = V4L2_MEMORY_MMAP;
 
     if (xioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req) < 0 || req.count == 0) {
-        req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
-        if (xioctl(ctx->v4l2_fd, VIDIOC_REQBUFS, &req) < 0) {
-            fprintf(stderr, "ERROR: VIDIOC_REQBUFS failed: %s\n", strerror(errno));
-            return -1;
-        }
+        fprintf(stderr, "ERROR: VIDIOC_REQBUFS failed: %s\n", strerror(errno));
+        return -1;
     }
     ctx->buf_count = req.count;
 
@@ -172,10 +179,12 @@ static int v4l2_init(VtxContext *ctx) {
         struct v4l2_buffer buf;
         struct v4l2_plane planes[1];
         memset(&buf, 0, sizeof(buf));
-        buf.type = req.type;
+        memset(planes, 0, sizeof(planes));
+
+        buf.type = ctx->buf_type;
         buf.memory = V4L2_MEMORY_MMAP;
         buf.index = i;
-        if (req.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
+        if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
             buf.m.planes = planes;
             buf.length = 1;
         }
@@ -185,20 +194,13 @@ static int v4l2_init(VtxContext *ctx) {
             return -1;
         }
 
-        size_t buf_len = (req.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? planes[0].length : buf.length;
-        off_t buf_off = (req.type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? planes[0].m.mem_offset : buf.m.offset;
-
+        size_t buf_len = (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? planes[0].length : buf.length;
         ctx->buffers[i].length = buf_len;
-        ctx->buffers[i].start = mmap(NULL, buf_len, PROT_READ | PROT_WRITE, MAP_SHARED, ctx->v4l2_fd, buf_off);
-        if (ctx->buffers[i].start == MAP_FAILED) {
-            perror("mmap");
-            return -1;
-        }
 
         /* Export DMA-BUF for zero-copy HW encoder import */
         struct v4l2_exportbuffer expbuf;
         memset(&expbuf, 0, sizeof(expbuf));
-        expbuf.type = req.type;
+        expbuf.type = ctx->buf_type;
         expbuf.index = i;
         expbuf.flags = O_CLOEXEC | O_RDWR;
         if (xioctl(ctx->v4l2_fd, VIDIOC_EXPBUF, &expbuf) < 0) {
@@ -211,8 +213,8 @@ static int v4l2_init(VtxContext *ctx) {
         memset(&info, 0, sizeof(info));
         info.type = MPP_BUFFER_TYPE_EXT_DMA;
         info.fd = expbuf.fd;
-        info.size = buf_len;
-        info.ptr = ctx->buffers[i].start;
+        info.size = buf_len & 0x07ffffff;
+        info.index = (buf_len & 0xf8000000) >> 27;
 
         MPP_RET ret = mpp_buffer_import(&ctx->buffers[i].mpp_buf, &info);
         if (ret != MPP_OK) {
@@ -226,7 +228,7 @@ static int v4l2_init(VtxContext *ctx) {
         }
     }
 
-    enum v4l2_buf_type type = req.type;
+    enum v4l2_buf_type type = ctx->buf_type;
     if (xioctl(ctx->v4l2_fd, VIDIOC_STREAMON, &type) < 0) {
         perror("VIDIOC_STREAMON");
         return -1;
@@ -325,16 +327,17 @@ static void *stream_tx_loop(void *arg) {
         struct v4l2_buffer buf;
         struct v4l2_plane planes[1];
         memset(&buf, 0, sizeof(buf));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
+        memset(planes, 0, sizeof(planes));
 
-        if (xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
-            buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+        buf.type = ctx->buf_type;
+        buf.memory = V4L2_MEMORY_MMAP;
+        if (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) {
             buf.m.planes = planes;
             buf.length = 1;
-            if (xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
-                continue;
-            }
+        }
+
+        if (xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+            continue;
         }
 
         uint32_t idx = buf.index;
@@ -443,15 +446,12 @@ int main(int argc, char **argv) {
     pthread_join(ctx.tx_thd, NULL);
 
     /* Teardown */
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    enum v4l2_buf_type type = ctx.buf_type;
     xioctl(ctx.v4l2_fd, VIDIOC_STREAMOFF, &type);
 
     for (uint32_t i = 0; i < ctx.buf_count; ++i) {
         if (ctx.buffers[i].mpp_buf) mpp_buffer_put(ctx.buffers[i].mpp_buf);
         if (ctx.buffers[i].dma_fd >= 0) close(ctx.buffers[i].dma_fd);
-        if (ctx.buffers[i].start && ctx.buffers[i].start != MAP_FAILED) {
-            munmap(ctx.buffers[i].start, ctx.buffers[i].length);
-        }
     }
     close(ctx.v4l2_fd);
 
@@ -461,3 +461,42 @@ int main(int argc, char **argv) {
     printf("VTX cleanly stopped.\n");
     return 0;
 }
+
+
+
+
+/*
+
+cat /dev/cu.usbmodem103 | mpv - \
+  --demuxer-lavf-format=hevc \
+  --demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer \
+  --no-correct-pts \
+  --container-fps-override=60 \
+  --profile=low-latency \
+  --no-cache \
+  --untimed \
+  --hwdec=no \
+  --video-sync=display-desync \
+  --opengl-glfinish=yes \
+  --framedrop=vo
+
+
+cat /dev/cu.usbmodem103 | mpv - \
+  --demuxer-lavf-format=hevc \
+  --demuxer-lavf-o=probesize=32768,analyzeduration=0 \
+  --no-correct-pts \
+  --container-fps-override=60 \
+  --profile=low-latency \
+  --no-cache \
+  --untimed \
+  --framedrop=vo
+
+# Find your device (e.g., /dev/cu.usbmodem1101)
+DEVICE=$(ls /dev/cu.usbmodem* | head -n 1)
+
+# Configure true raw binary mode
+stty -f $DEVICE raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+
+cat $DEVICE | ffplay -fflags nobuffer -flags low_delay -f hevc -framerate 60 -i -
+
+*/

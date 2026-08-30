@@ -10,7 +10,7 @@
 
 / {
 chosen {
-		bootargs = "earlycon=uart8250,mmio32,0xff4c0000 console=ttyFIQ0 root=PARTLABEL=rootfs rootwait snd_soc_core.prealloc_buffer_size_kbytes=16 coherent_pool=0";
+		bootargs = "earlycon=uart8250,mmio32,0xff4c0000 console=ttyFIQ0 root=PARTLABEL=rootfs rootwait snd_soc_core.prealloc_buffer_size_kbytes=16 coherent_pool=0 cma=32M";
 	};
 
 	reserved_memory: reserved-memory {
@@ -18,6 +18,19 @@ chosen {
 		#address-cells = <1>;
 		#size-cells = <1>;
 		ranges;
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x02000000>;
+			linux,cma-default;
+		};
+		rknpu_reserved: rknpu {
+			compatible = "shared-dma-pool";
+			inactive;
+			reusable;
+			size = <0x04000000>;     /* 64MB for NPU AI models */
+			alignment = <0x1000>;
+		};
 		mmc_ecsd: mmc@3f000 {
 			reg = <0x3f000 0x00001000>;
 		};
@@ -195,12 +208,12 @@ chosen {
 
 	imx290: imx290@1a {
 		status = "okay";
-		compatible = "sony,imx462", "sony,imx290";           /* MATCHES DRIVER MODEL */
+		compatible = "sony,imx462", "sony,imx327";           /* MATCHES DRIVER MODEL */
 		reg = <0x1a>;
 		clocks = <&out_osc_imx462>;
-		clock-names = "xclk";
+		clock-names = "xvclk";
 		clock-frequency = <37125000>;
-		reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_LOW>;
+		reset-gpios = <&gpio3 RK_PC5 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&cam_io_1>;
 
@@ -214,7 +227,7 @@ chosen {
 			imx290_out: endpoint {
 				remote-endpoint = <&csi_dphy_input0>;
 				data-lanes = <1 2>;
-				link-frequencies = /bits/ 64 <445500000>; /* 2-LANE 1080P60 LINK FREQ */
+				link-frequencies = /bits/ 64 <445500000 297000000>; /* 2-LANE 1080P60 LINK FREQ */
 			};
 		};
 	};
@@ -425,3 +438,8 @@ chosen {
 	opp-1608000000 { /delete-property/ opp-microvolt; };
 };
 
+
+&npu {
+	memory-region = <&rknpu_reserved>;
+	status = "okay";
+};
