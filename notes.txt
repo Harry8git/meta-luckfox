@@ -42,7 +42,6 @@ grep "LAYERSERIES_COMPAT" meta-luckfox/conf/layer.conf
 
 grep "LAYERDEPENDS" meta-luckfox/conf/layer.conf
 
-ls meta-luckfox/conf/machine/
 
 
 
@@ -54,30 +53,12 @@ bitbake core-image-minimal
 
 
 
-cd /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-pro-max/
-
-
-
-We need to configure U-Boot :
-# CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION is not set
-CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR=y
-CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=0x440
-
-sed -i '/CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=/i \        printf "# CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION is not set\\nCONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR=y\\n" >> .config' meta-luckfox/recipes-bsp/u-boot/u-boot-rockchip_git.bb 2>/dev/null || sed -i '/CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_SECTOR=/i \        printf "# CONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_PARTITION is not set\\nCONFIG_SYS_MMCSD_RAW_MODE_U_BOOT_USE_SECTOR=y\\n" >> .config' $(find meta-luckfox -name "u-boot-rockchip*.bb*")
-
-
-
-
-
-
-
 ls /dev/tty.* | grep -iE "usb|modem"
 
 ssh root@169.254.100.1
 
 
 
-bitbake core-image-minimal
 
 
 
@@ -85,6 +66,7 @@ ip addr del 172.32.0.93/16 dev usb0
 ip addr add 169.254.100.1/16 dev usb0
 
 source ~/rv1106-yocto/openembedded-core/oe-init-build-env build
+bitbake core-image-minimal
 
 NEW_YOCTO="/Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/deploy/images/luckfox-pico-zero"
 
@@ -94,3 +76,30 @@ rkdeveloptool rd
 
 
 scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/apps/vtx root@169.254.100.1:/usr/bin/vtx
+
+
+
+
+DEV=$(ls -1 /dev/cu.usbmodem* 2>/dev/null | head -n 1)
+stty -f "$DEV" 115200 raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
+cat "$DEV" | ffplay -fflags nobuffer -flags low_delay -framedrop -f hevc -i -
+
+
+
+scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/build/tmp/work/cortexa7t2hf-neon-vfpv4-oe-linux-gnueabi/luckfox-vtx/1.0/sources/vtx root@169.254.100.1:/usr/bin/vtx
+
+ssh-keygen -R 169.254.100.1
+
+
+
+
+
+
+
+
+dmesg | grep -i "IMX462"
+media-ctl -p -d /dev/media0 | grep -C 5 "m00_b_imx462"
+
+/usr/bin/rkaiq_3A_server &
+sleep 2
+vtx

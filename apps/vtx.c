@@ -45,7 +45,7 @@ typedef struct {
     uint32_t    height;
     uint32_t    fps;
     uint32_t    bitrate_kbps;
-    uint32_t    gir_rows;
+    uint32_t    gop;
 } VtxConfig;
 
 typedef struct {
@@ -65,6 +65,9 @@ typedef struct {
     MppApi     *mpi;
     MppEncCfg   enc_cfg;
 
+    uint8_t     hdr_buf[512];
+    size_t      hdr_len;
+
     int         cdc_fd;
     pthread_t   tx_thd;
 } VtxContext;
@@ -79,8 +82,7 @@ static void sigterm_handler(int sig) {
 static int set_serial_raw(int fd) {
     struct termios tty;
     if (tcgetattr(fd, &tty) != 0) {
-        perror("tcgetattr");
-        return -1;
+        return 0; /* Not a tty (e.g. regular file) */
     }
     cfmakeraw(&tty);
     tty.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON | IXOFF);
@@ -197,7 +199,6 @@ static int v4l2_init(VtxContext *ctx) {
         size_t buf_len = (ctx->buf_type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE) ? planes[0].length : buf.length;
         ctx->buffers[i].length = buf_len;
 
-        /* Export DMA-BUF for zero-copy HW encoder import */
         struct v4l2_exportbuffer expbuf;
         memset(&expbuf, 0, sizeof(expbuf));
         expbuf.type = ctx->buf_type;
@@ -268,7 +269,7 @@ static int mpp_enc_setup(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:ver_stride", ver_stride);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "prep:format", MPP_FMT_YUV420SP);
 
-    /* Clean H.265 CBR Rate Control */
+    /* Rate Control */
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:mode", MPP_ENC_RC_MODE_CBR);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:bps_target", ctx->cfg.bitrate_kbps * 1000);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:bps_max", ctx->cfg.bitrate_kbps * 1000);
@@ -279,23 +280,31 @@ static int mpp_enc_setup(VtxContext *ctx) {
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_flex", 0);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_num", ctx->cfg.fps);
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:fps_out_denorm", 1);
-    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.fps * 5);
+    mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:gop", ctx->cfg.gop);
 
-    /* H.265 Profile */
+    /* Codec Type */
     mpp_enc_cfg_set_s32(ctx->enc_cfg, "codec:type", MPP_VIDEO_CodingHEVC);
-    mpp_enc_cfg_set_s32(ctx->enc_cfg, "h265:profile", 1); /* Main Profile */
-
-    /* Gradual Intra Refresh (GIR) */
-    if (ctx->cfg.gir_rows > 0) {
-        mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:refresh_en", 1);
-        mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:refresh_mode", MPP_ENC_RC_INTRA_REFRESH_ROW);
-        mpp_enc_cfg_set_s32(ctx->enc_cfg, "rc:refresh_num", ctx->cfg.gir_rows);
-    }
 
     ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_SET_CFG, ctx->enc_cfg);
     if (ret != MPP_OK) {
         fprintf(stderr, "ERROR: MPP_ENC_SET_CFG failed: %d\n", ret);
         return -1;
+    }
+
+    /* Extract H.265 Parameter Sets (VPS/SPS/PPS) with MPP_ENC_GET_EXTRA_INFO */
+    MppPacket extra_pkt = NULL;
+    ret = ctx->mpi->control(ctx->mpp_ctx, MPP_ENC_GET_EXTRA_INFO, &extra_pkt);
+    if (ret == MPP_OK && extra_pkt) {
+        void *ptr = mpp_packet_get_pos(extra_pkt);
+        size_t len = mpp_packet_get_length(extra_pkt);
+        if (ptr && len > 0 && len <= sizeof(ctx->hdr_buf)) {
+            memcpy(ctx->hdr_buf, ptr, len);
+            ctx->hdr_len = len;
+            printf(">>> SUCCESS: Extracted H.265 Parameter Headers (VPS/SPS/PPS: %zu bytes) <<<\n", ctx->hdr_len);
+        }
+        mpp_packet_deinit(&extra_pkt);
+    } else {
+        fprintf(stderr, "WARNING: MPP_ENC_GET_EXTRA_INFO returned %d\n", ret);
     }
 
     RK_S32 timeout = 100;
@@ -309,9 +318,9 @@ static void *stream_tx_loop(void *arg) {
     VtxContext *ctx = (VtxContext *)arg;
     prctl(PR_SET_NAME, "vtx_tx", 0, 0, 0);
 
-    ctx->cdc_fd = open(ctx->cfg.cdc_dev, O_WRONLY | O_NONBLOCK | O_NOCTTY);
+    ctx->cdc_fd = open(ctx->cfg.cdc_dev, O_WRONLY | O_CREAT | O_TRUNC | O_NONBLOCK | O_NOCTTY, 0666);
     if (ctx->cdc_fd < 0) {
-        fprintf(stderr, "ERROR: Cannot open CDC device '%s': %s\n", ctx->cfg.cdc_dev, strerror(errno));
+        fprintf(stderr, "ERROR: Cannot open output '%s': %s\n", ctx->cfg.cdc_dev, strerror(errno));
         quit = true;
         return NULL;
     }
@@ -319,6 +328,7 @@ static void *stream_tx_loop(void *arg) {
 
     printf(">>> VTX ACTIVE: Streaming Zero-Copy H.265 to %s <<<\n", ctx->cfg.cdc_dev);
 
+    uint32_t frame_cnt = 0;
     while (!quit) {
         struct pollfd pfd = { .fd = ctx->v4l2_fd, .events = POLLIN };
         int poll_ret = poll(&pfd, 1, 40);
@@ -359,7 +369,12 @@ static void *stream_tx_loop(void *arg) {
             if (ret == MPP_OK && packet) {
                 void *ptr = mpp_packet_get_pos(packet);
                 size_t len = mpp_packet_get_length(packet);
+
                 if (ptr && len > 0) {
+                    /* Prepend VPS/SPS/PPS header at the start and on every keyframe (GOP) */
+                    if ((frame_cnt++ % ctx->cfg.gop == 0) && ctx->hdr_len > 0) {
+                        cdc_write_all(ctx->cdc_fd, ctx->hdr_buf, ctx->hdr_len);
+                    }
                     cdc_write_all(ctx->cdc_fd, (const uint8_t *)ptr, len);
                 }
                 mpp_packet_deinit(&packet);
@@ -387,7 +402,7 @@ int main(int argc, char **argv) {
     ctx.cfg.height = 720;
     ctx.cfg.fps = 60;
     ctx.cfg.bitrate_kbps = 2400;
-    ctx.cfg.gir_rows = 2;
+    ctx.cfg.gop = 60;
 
     static struct option long_opts[] = {
         {"device",  required_argument, 0, 'd'},
@@ -396,7 +411,7 @@ int main(int argc, char **argv) {
         {"height",  required_argument, 0, 'h'},
         {"fps",     required_argument, 0, 'f'},
         {"bitrate", required_argument, 0, 'b'},
-        {"gir",     required_argument, 0, 'g'},
+        {"gop",     required_argument, 0, 'g'},
         {"help",    no_argument,       0, '?'},
         {0, 0, 0, 0}
     };
@@ -410,9 +425,9 @@ int main(int argc, char **argv) {
             case 'h': ctx.cfg.height = (uint32_t)atoi(optarg); break;
             case 'f': ctx.cfg.fps = (uint32_t)atoi(optarg); break;
             case 'b': ctx.cfg.bitrate_kbps = (uint32_t)atoi(optarg); break;
-            case 'g': ctx.cfg.gir_rows = (uint32_t)atoi(optarg); break;
+            case 'g': ctx.cfg.gop = (uint32_t)atoi(optarg); break;
             default:
-                printf("Usage: %s [-d /dev/video11] [-o /dev/ttyGS0] [-w 1280] [-h 720] [-f 60] [-b 2400] [-g 2]\n", argv[0]);
+                printf("Usage: %s [-d /dev/video11] [-o /dev/ttyGS0] [-w 1280] [-h 720] [-f 60] [-b 2400] [-g 60]\n", argv[0]);
                 return 0;
         }
     }
@@ -423,7 +438,7 @@ int main(int argc, char **argv) {
     printf("\n=======================================================\n");
     printf(" Luckfox Pico - Open MPP Zero-Copy H.265 VTX\n");
     printf(" Ingest       : %s (%ux%u @ %ufps)\n", ctx.cfg.v4l2_dev, ctx.cfg.width, ctx.cfg.height, ctx.cfg.fps);
-    printf(" Video Codec  : H.265 CBR (%u Kbps) + GIR (%u rows)\n", ctx.cfg.bitrate_kbps, ctx.cfg.gir_rows);
+    printf(" Video Codec  : H.265 CBR (%u Kbps) [GOP %u]\n", ctx.cfg.bitrate_kbps, ctx.cfg.gop);
     printf(" Output Node  : %s\n", ctx.cfg.cdc_dev);
     printf("=======================================================\n\n");
 
@@ -461,42 +476,3 @@ int main(int argc, char **argv) {
     printf("VTX cleanly stopped.\n");
     return 0;
 }
-
-
-
-
-/*
-
-cat /dev/cu.usbmodem103 | mpv - \
-  --demuxer-lavf-format=hevc \
-  --demuxer-lavf-o=probesize=32,analyzeduration=0,fflags=nobuffer \
-  --no-correct-pts \
-  --container-fps-override=60 \
-  --profile=low-latency \
-  --no-cache \
-  --untimed \
-  --hwdec=no \
-  --video-sync=display-desync \
-  --opengl-glfinish=yes \
-  --framedrop=vo
-
-
-cat /dev/cu.usbmodem103 | mpv - \
-  --demuxer-lavf-format=hevc \
-  --demuxer-lavf-o=probesize=32768,analyzeduration=0 \
-  --no-correct-pts \
-  --container-fps-override=60 \
-  --profile=low-latency \
-  --no-cache \
-  --untimed \
-  --framedrop=vo
-
-# Find your device (e.g., /dev/cu.usbmodem1101)
-DEVICE=$(ls /dev/cu.usbmodem* | head -n 1)
-
-# Configure true raw binary mode
-stty -f $DEVICE raw -echo -onlcr -ocrnl -opost -isig -icanon -ixon -ixoff cs8
-
-cat $DEVICE | ffplay -fflags nobuffer -flags low_delay -f hevc -framerate 60 -i -
-
-*/

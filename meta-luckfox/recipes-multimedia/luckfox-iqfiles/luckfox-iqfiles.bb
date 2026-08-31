@@ -28,7 +28,6 @@ do_install() {
     install -m 0644 ${UNPACKDIR}/sc3336_CMK-OT2119-PC1_30IRC-F16.json ${D}${sysconfdir}/iqfiles/
     install -m 0644 ${UNPACKDIR}/mis5001_CMK-OT2115-PC1_30IRC-F16.json ${D}${sysconfdir}/iqfiles/
     install -m 0644 ${UNPACKDIR}/imx462_imx462_default.json ${D}${sysconfdir}/iqfiles/
-    ln -sf imx462_imx462_default.json ${D}${sysconfdir}/iqfiles/imx327_imx462_default.json
 
     install -d ${D}${sysconfdir}/iqfiles/CAC_sc4336_OT01_40IRC_F16
     install -m 0644 ${UNPACKDIR}/CAC_sc4336_OT01_40IRC_F16/cac_map_hw_2560x1440.bin \

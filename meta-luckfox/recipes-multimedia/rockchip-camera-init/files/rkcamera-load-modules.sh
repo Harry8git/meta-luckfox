@@ -55,7 +55,11 @@ set -e
 # Try every sensor driver this kernel build supports; whichever one is not
 # physically present on the I2C/CSI bus just fails its own probe internally
 # and the module stays loaded with zero bound devices (cleaned up below).
-for sensor in mis5001 sc3336 imx415 imx327; do
+# NOTE: the IMX462 board DT binds to the imx290 driver via compatible
+# "sony,imx462" (see the board dtsi), so the sensor module name is
+# "imx290", not "imx462". Without this load, the CIF/ISP async notifier
+# never gets a valid sensor endpoint and the camera pipeline remains broken.
+for sensor in mis5001 sc3336 imx415 imx327 imx290; do
 	modprobe "$sensor" || true
 done
 
@@ -71,7 +75,7 @@ modprobe phy-rockchip-csi2-dphy
 
 # Drop sensor modules that never bound to any device (3rd lsmod column, the
 # refcount, is 0) -- same cleanup the vendor script does.
-for sensor in mis5001 sc3336 imx415 imx327; do
+for sensor in mis5001 sc3336 imx415 imx327 imx290; do
 	if lsmod | grep -w "$sensor" | awk '{print $3}' | grep -qw 0; then
 		rmmod "$sensor" || true
 	fi
