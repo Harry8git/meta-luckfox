@@ -214,8 +214,8 @@ static int v4l2_init(VtxContext *ctx) {
         memset(&info, 0, sizeof(info));
         info.type = MPP_BUFFER_TYPE_EXT_DMA;
         info.fd = expbuf.fd;
-        info.size = buf_len & 0x07ffffff;
-        info.index = (buf_len & 0xf8000000) >> 27;
+        info.size = buf_len;
+        info.index = i;
 
         MPP_RET ret = mpp_buffer_import(&ctx->buffers[i].mpp_buf, &info);
         if (ret != MPP_OK) {
@@ -347,6 +347,10 @@ static void *stream_tx_loop(void *arg) {
         }
 
         if (xioctl(ctx->v4l2_fd, VIDIOC_DQBUF, &buf) < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                perror("VIDIOC_DQBUF");
+            }
+            usleep(1000);
             continue;
         }
 
@@ -378,13 +382,20 @@ static void *stream_tx_loop(void *arg) {
                     cdc_write_all(ctx->cdc_fd, (const uint8_t *)ptr, len);
                 }
                 mpp_packet_deinit(&packet);
+            } else if (ret != MPP_OK) {
+                usleep(1000);
             }
+        } else if (ret != MPP_OK) {
+            usleep(1000);
         }
 
         if (frame) mpp_frame_deinit(&frame);
 
         /* Return buffer to V4L2 capture queue */
-        xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf);
+        if (xioctl(ctx->v4l2_fd, VIDIOC_QBUF, &buf) < 0) {
+            perror("VIDIOC_QBUF");
+            usleep(1000);
+        }
     }
 
     close(ctx->cdc_fd);

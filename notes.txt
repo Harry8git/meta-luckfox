@@ -74,7 +74,7 @@ rkdeveloptool db "$NEW_YOCTO/download.bin" && \
 rkdeveloptool wl 0 "$NEW_YOCTO/core-image-minimal-luckfox-pico-zero.rootfs.wic" && \
 rkdeveloptool rd
 
-
+./build-and-deploy-vtx.sh
 scp /Users/hspencer/OrbStack/rv1106g3/home/hspencer/rv1106-yocto/apps/vtx root@169.254.100.1:/usr/bin/vtx
 
 
@@ -103,3 +103,14 @@ media-ctl -p -d /dev/media0 | grep -C 5 "m00_b_imx462"
 /usr/bin/rkaiq_3A_server &
 sleep 2
 vtx
+
+
+
+
+
+
+ps | grep -E "rkaiq|3A|isp"
+
+
+
+

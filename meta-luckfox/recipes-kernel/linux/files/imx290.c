@@ -224,8 +224,8 @@ static int imx290_start_streaming(struct imx290 *imx290)
 	 * 1-lane mode produces unstable/garbled Bayer data and the green
 	 * block corruption seen in the processed image.
 	 */
-	imx290_write(imx290, IMX290_PHY_LANE_NUM, 2, &ret);
-	imx290_write(imx290, IMX290_CSI_LANE_MODE, 2, &ret);
+	imx290_write(imx290, IMX290_PHY_LANE_NUM, 1, &ret);
+	imx290_write(imx290, IMX290_CSI_LANE_MODE, 1, &ret);
 	imx290_write(imx290, IMX290_FR_FDG_SEL, 0x01, &ret);
 	imx290_write(imx290, IMX290_CTRL_07, 0x00, &ret);
 
